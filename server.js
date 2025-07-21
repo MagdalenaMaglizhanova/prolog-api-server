@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 
 const app = express();
-const port = 1000; // директно зададен порт 1000
+const port = 10000; // директно зададен порт 1000
 
 app.use(cors());
 app.use(express.json());
