@@ -1,5 +1,5 @@
 % Исторически забележителности в България
-spring(1, 'Belchin-Verila', 46, 354, 65.36, 0, 2.5, [6, 13.83, 122.22, 36.01, 6.11, 5.35, 0, 0], [0.1, 0.06, 94.25, 0.9, 3.61, 0, 0.03, 0.0002]):-write('test).
+
 % Форма: historical_site(Name, period, location, type).
 historical_site("Thracian Tomb of Kazanlak", thracian, "Kazanlak", tomb).
 historical_site("Roman Theatre of Plovdiv", roman, "Plovdiv", theatre).
