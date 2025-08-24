@@ -11,26 +11,30 @@ app.use(express.json());
 
 app.post("/prolog", (req, res) => {
   const { query } = req.body;
+  
+  if (!query) {
+    return res.status(400).json({ error: "No query provided" });
+  }
 
-  if (!query) return res.status(400).json({ error: "No query provided" });
+  const prologFile = path.join(__dirname, "prolog_files", "example1.pl");
+  const hasVars = /[A-Z]/.test(query);
+  let goal = "";
 
-  // Винаги стартираме от manager.pl
-  const prologFile = path.join(__dirname, "prolog_files", "manager.pl");
+  if (hasVars) {
+    const argsMatch = query.match(/\((.*)\)/);
+    const args = argsMatch ? argsMatch[1] : "";
+    goal = `findall([${args}], ${query}, L), writeq(L), nl, halt.`;
+  } else {
+    goal = `${query}, write('true'), nl, halt.`;
+  }
 
-  // Целта е просто да изпълним това, което е подадено
-  const goal = `${query}, halt.`;
-
-  execFile(
-    "swipl",
-    ["-q", "-s", prologFile, "-g", goal],
-    (error, stdout, stderr) => {
-      if (error) {
-        res.status(500).json({ error: stderr || error.message });
-      } else {
-        res.json({ result: stdout.trim() || "false" });
-      }
+  execFile("swipl", ["-q", "-s", prologFile, "-g", goal], (error, stdout, stderr) => {
+    if (error) {
+      res.status(500).json({ error: stderr || error.message });
+    } else {
+      res.json({ result: stdout.trim() || "false" });
     }
-  );
+  });
 });
 
 app.listen(port, () => {
