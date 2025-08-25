@@ -9,10 +9,12 @@ const port = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-// Дефинирайте mapping между стойностите от менюто и имената на файловете
+// Разширен mapping с новите бази
 const knowledgeBaseMap = {
-  mineral_waters: "mineral_water.pl", // Стойността от <option value="mineral_waters">
-  history: "history.pl"               // Стойността от <option value="history">
+  mineral_waters: "mineral_water.pl", // стойността от <option value="mineral_waters">
+  history: "history.pl",               // стойността от <option value="history">
+  caves: "caves.pl",                   // новата база за пещери
+  birds: "birds.pl"                    // новата база за птици
 };
 
 app.post("/prolog", (req, res) => {
@@ -22,7 +24,6 @@ app.post("/prolog", (req, res) => {
     return res.status(400).json({ error: "No query provided" });
   }
 
-  // 1. ВЗЕМИ ПРАВИЛНИЯ ФАЙЛ ВЪЗ ОСНОВА НА ИЗБОРА ОТ МЕНЮТО
   const prologFileName = knowledgeBaseMap[knowledgeBase];
   if (!prologFileName) {
     return res.status(400).json({ error: "Invalid knowledge base selected" });
@@ -34,7 +35,7 @@ app.post("/prolog", (req, res) => {
   let goal = "";
 
   if (hasVars) {
-    // НОВ КОД: Филтрираме само релевантните променливи (започващи с главна буква)
+    // Филтрираме само релевантните променливи (започващи с главна буква)
     const variableRegex = /[A-Z][a-zA-Z0-9_]*/g;
     const variables = query.match(variableRegex);
     const args = variables ? variables.join(',') : "";
@@ -44,7 +45,6 @@ app.post("/prolog", (req, res) => {
     goal = `${query}, write('true'), nl, halt.`;
   }
 
-  // 2. СТАРТИРАЙ SWI-PROLOG САМО С ИЗБРАНИЯ ФАЙЛ
   execFile("swipl", ["-q", "-s", prologFile, "-g", goal], (error, stdout, stderr) => {
     if (error) {
       console.error("Prolog Error:", error);
