@@ -16,7 +16,7 @@ const knowledgeBaseMap = {
 };
 
 app.post("/prolog", (req, res) => {
-  const { query, knowledgeBase } = req.body; // Вече взимаме и knowledgeBase
+  const { query, knowledgeBase } = req.body;
 
   if (!query) {
     return res.status(400).json({ error: "No query provided" });
@@ -34,15 +34,17 @@ app.post("/prolog", (req, res) => {
   let goal = "";
 
   if (hasVars) {
-    const argsMatch = query.match(/\((.*)\)/);
-    const args = argsMatch ? argsMatch[1] : "";
+    // НОВ КОД: Филтрираме само релевантните променливи (започващи с главна буква)
+    const variableRegex = /[A-Z][a-zA-Z0-9_]*/g;
+    const variables = query.match(variableRegex);
+    const args = variables ? variables.join(',') : "";
+    
     goal = `findall([${args}], ${query}, L), writeq(L), nl, halt.`;
   } else {
     goal = `${query}, write('true'), nl, halt.`;
   }
 
   // 2. СТАРТИРАЙ SWI-PROLOG САМО С ИЗБРАНИЯ ФАЙЛ
-  //    Вече не се зарежда example1.pl, който консултира и трите!
   execFile("swipl", ["-q", "-s", prologFile, "-g", goal], (error, stdout, stderr) => {
     if (error) {
       console.error("Prolog Error:", error);
