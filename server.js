@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const cors = require("cors");
 const { execFile } = require("child_process");
@@ -47,84 +46,38 @@ async function loadDomain(domain) {
     fs.writeFileSync(localPath, buffer);
   }
 
-  return { mainPl: path.join(baseDir, "main.pl"), baseDir };
+  return baseDir; // връщаме папката, не конкретен файл
 }
 
 // POST /prolog-run
-// Приема { query: "bird(X).", domain: "animals" }
+// { domain: "animals", predicate: "select_file('bird.pl')" }
 app.post("/prolog-run", async (req, res) => {
-  const { query, domain } = req.body;
-
-  if (!query) return res.status(400).json({ error: "No query provided" });
-  if (!domain) return res.status(400).json({ error: "No domain specified" });
+  const { domain, predicate } = req.body;
+  if (!domain || !predicate) return res.status(400).json({ error: "Missing domain or predicate" });
 
   try {
-    const { mainPl, baseDir } = await loadDomain(domain);
+    const baseDir = await loadDomain(domain);
 
-    const sanitizedQuery = query.trim().replace(/\.$/, ""); // махаме точката
-    const tmpFile = path.join(baseDir, `temp_query_${Date.now()}.pl`);
-
-    // Генерираме временно Prolog file, който събира решенията
-    const tmpContent = `
-:- working_directory(_, '${baseDir.replace(/\\/g,"/")}').
-:- consult('${mainPl.replace(/\\/g, "/")}').
-:- initialization(load_all).
-
-run_query :-
-    findall(${sanitizedQuery}, ${sanitizedQuery}, Results),
-    ( Results = [] -> write('false'); write(Results) ),
-    nl.
+    const tempFile = path.join(baseDir, "temp_run.pl");
+    // Създаваме временен файл, който зарежда main.pl и стартира желания предикат
+    const tempCode = `
+:- [main].
+:- initialization((${predicate}, halt)).
 `;
+    fs.writeFileSync(tempFile, tempCode, { encoding: "utf8" });
 
-    fs.writeFileSync(tmpFile, tmpContent);
-
-    execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
+    execFile("swipl", ["-q", "-s", tempFile], (error, stdout, stderr) => {
       if (error) {
-        console.error("Prolog Error:", error);
-        console.error("Prolog Stderr:", stderr);
-        return res.status(500).json({ error: stderr || error.message });
+        res.json({ error: stderr || error.message });
+      } else {
+        res.json({ result: stdout.trim() || "true" });
       }
-      res.json({ result: stdout.trim() || "false" });
     });
-
   } catch (err) {
-    console.error("Server Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /prolog-files/:domain
-app.get("/prolog-files/:domain", async (req, res) => {
-  const { domain } = req.params;
-
-  try {
-    const { mainPl, baseDir } = await loadDomain(domain);
-
-    const tmpFile = path.join(baseDir, `temp_help_${Date.now()}.pl`);
-    const tmpContent = `
-:- working_directory(_, '${baseDir.replace(/\\/g,"/")}').
-:- consult('${mainPl.replace(/\\/g, "/")}').
-:- initialization(load_all).
-
-run_query :- help.
-`;
-
-    fs.writeFileSync(tmpFile, tmpContent);
-
-    execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
-      if (error) {
-        console.error("Prolog Error:", error);
-        return res.status(500).json({ error: stderr || error.message });
-      }
-      res.json({ result: stdout.trim() });
-    });
-
-  } catch (err) {
-    console.error("Server Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(port, () => {
-  console.log(`Supabase Prolog server running on port ${port}`);
+  console.log(`Prolog server running on port ${port}`);
 });
