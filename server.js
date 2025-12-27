@@ -1,3 +1,4 @@
+// server.js
 const express = require("express");
 const cors = require("cors");
 const { execFile } = require("child_process");
@@ -17,15 +18,16 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// Helper: зареждане на domain от Supabase
+// Helper: зареждане на папка/domain от Supabase
 async function loadDomain(domain) {
   if (!domain.match(/^[a-z]+$/)) throw new Error("Invalid domain name");
 
   const baseDir = path.join(__dirname, "runtime", domain);
   fs.mkdirSync(baseDir, { recursive: true });
 
-  // Вземаме списъка с файлове от Supabase bucket "prolog-kb"
-  const { data: files, error } = await supabase.storage.from("prolog-files").list(domain);
+  const bucket = "prolog-files";
+  const { data: files, error } = await supabase.storage.from(bucket).list(domain);
+
   if (error) throw error;
 
   for (const file of files) {
@@ -33,25 +35,16 @@ async function loadDomain(domain) {
     const localPath = path.join(baseDir, file.name);
     if (fs.existsSync(localPath)) continue;
 
-    const { data, error: downloadErr } = await supabase
-      .storage
-      .from("prolog-files")
-      .download(`${domain}/${file.name}`);
-
-    if (downloadErr) throw downloadErr;
-
+    const { data } = await supabase.storage.from(bucket).download(`${domain}/${file.name}`);
     const buffer = Buffer.from(await data.arrayBuffer());
-    fs.writeFileSync(localPath, buffer);
+    fs.writeFileSync(localPath, buffer, { encoding: "utf8" });
   }
 
-  // Връщаме пътя към main.pl
-  const mainPlPath = path.join(baseDir, "main.pl");
-  if (!fs.existsSync(mainPlPath)) throw new Error("main.pl not found in domain");
-  return mainPlPath;
+  return baseDir;
 }
 
 // POST /prolog-run
-// Приема { query: "bird(X).", domain: "animal" }
+// Приема { query: "bird(X).", domain: "animals" }
 app.post("/prolog-run", async (req, res) => {
   const { query, domain } = req.body;
 
@@ -59,35 +52,28 @@ app.post("/prolog-run", async (req, res) => {
   if (!domain) return res.status(400).json({ error: "No domain specified" });
 
   try {
-    const mainPl = await loadDomain(domain);
+    const domainPath = await loadDomain(domain);
+    const mainPl = path.join(domainPath, "main.pl");
+    if (!fs.existsSync(mainPl)) throw new Error("main.pl not found in domain");
 
-    // Създаваме временен файл с wrapper за query
-    const tmpQueryFile = path.join(__dirname, "runtime", domain, "temp_query.pl");
-    fs.writeFileSync(
-      tmpQueryFile,
-      `
-:- initialization(main).
+    // Създаваме временен файл за query
+    const tmpFile = path.join(domainPath, `temp_query.pl`);
+    const tmpContent = `
+      :- encoding(utf8).
+      :- use_module('${mainPl}').
+      run_query :- ${query}, write('true'), nl, halt.
+    `;
+    fs.writeFileSync(tmpFile, tmpContent, { encoding: "utf8" });
 
-main :-
-    (${query}),
-    write('true'), nl,
-    halt.
-`
-    );
-
-    // Стартираме SWI-Prolog с main.pl + temp query
-    execFile(
-      "swipl",
-      ["-q", "-s", mainPl, "-s", tmpQueryFile, "-g", "main"],
-      (error, stdout, stderr) => {
-        if (error) {
-          console.error("Prolog Error:", error);
-          console.error("Prolog Stderr:", stderr);
-          return res.status(500).json({ error: stderr || error.message });
-        }
-        res.json({ result: stdout.trim() || "false" });
+    execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query"], (error, stdout, stderr) => {
+      if (error) {
+        console.error("Prolog Error:", error);
+        console.error("Prolog Stderr:", stderr);
+        return res.status(500).json({ error: stderr || error.message });
       }
-    );
+      res.json({ result: stdout.trim() || "false" });
+    });
+
   } catch (err) {
     console.error("Server Error:", err);
     res.status(500).json({ error: err.message });
