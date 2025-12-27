@@ -25,7 +25,6 @@ async function loadDomain(domain) {
   const baseDir = path.join(__dirname, "runtime", domain);
   fs.mkdirSync(baseDir, { recursive: true });
 
-  // Вземаме списъка с файлове от bucket
   const { data: files, error } = await supabase
     .storage
     .from("prolog-files")
@@ -52,7 +51,7 @@ async function loadDomain(domain) {
 }
 
 // POST /prolog-run
-// Приема { query: "help", domain: "animals" }
+// Приема { query: "bird(X).", domain: "animals" }
 app.post("/prolog-run", async (req, res) => {
   const { query, domain } = req.body;
 
@@ -62,23 +61,23 @@ app.post("/prolog-run", async (req, res) => {
   try {
     const { mainPl, baseDir } = await loadDomain(domain);
 
-    // Премахваме евентуална точка в края на query
-    const sanitizedQuery = query.trim().replace(/\.$/, "");
-
-    // Създаваме временен Prolog файл
+    const sanitizedQuery = query.trim().replace(/\.$/, ""); // махаме точката
     const tmpFile = path.join(baseDir, `temp_query_${Date.now()}.pl`);
+
+    // Генерираме временно Prolog file, който събира решенията
     const tmpContent = `
 :- working_directory(_, '${baseDir.replace(/\\/g,"/")}').
 :- consult('${mainPl.replace(/\\/g, "/")}').
 :- initialization(load_all).
 
 run_query :-
-    ( ${sanitizedQuery} -> write('true'); write('false') ).
+    findall(${sanitizedQuery}, ${sanitizedQuery}, Results),
+    ( Results = [] -> write('false'); write(Results) ),
+    nl.
 `;
 
     fs.writeFileSync(tmpFile, tmpContent);
 
-    // Стартираме SWI-Prolog
     execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
       if (error) {
         console.error("Prolog Error:", error);
@@ -95,7 +94,6 @@ run_query :-
 });
 
 // GET /prolog-files/:domain
-// Връща списък с файлове и старт предикати (чрез help)
 app.get("/prolog-files/:domain", async (req, res) => {
   const { domain } = req.params;
 
@@ -110,6 +108,7 @@ app.get("/prolog-files/:domain", async (req, res) => {
 
 run_query :- help.
 `;
+
     fs.writeFileSync(tmpFile, tmpContent);
 
     execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
