@@ -25,7 +25,7 @@ async function loadDomain(domain) {
   const baseDir = path.join(__dirname, "runtime", domain);
   fs.mkdirSync(baseDir, { recursive: true });
 
-  // Вземаме списъка с файлове
+  // Вземаме списъка с файлове от bucket
   const { data: files, error } = await supabase
     .storage
     .from("prolog-files")
@@ -48,11 +48,11 @@ async function loadDomain(domain) {
     fs.writeFileSync(localPath, buffer);
   }
 
-  return path.join(baseDir, "main.pl");
+  return { mainPl: path.join(baseDir, "main.pl"), baseDir };
 }
 
 // POST /prolog-run
-// Приема { query: "bird(X).", domain: "animals" }
+// Приема { query: "help", domain: "animals" }
 app.post("/prolog-run", async (req, res) => {
   const { query, domain } = req.body;
 
@@ -60,17 +60,23 @@ app.post("/prolog-run", async (req, res) => {
   if (!domain) return res.status(400).json({ error: "No domain specified" });
 
   try {
-    const mainPl = await loadDomain(domain);
+    const { mainPl, baseDir } = await loadDomain(domain);
 
-    // Временен файл с run_query, който зарежда main.pl и извиква load_all
-    const tmpFile = path.join(__dirname, "runtime", domain, "temp_query.pl");
-    fs.writeFileSync(tmpFile, `
+    // Премахваме евентуална точка в края на query
+    const sanitizedQuery = query.trim().replace(/\.$/, "");
+
+    // Създаваме временен Prolog файл
+    const tmpFile = path.join(baseDir, `temp_query_${Date.now()}.pl`);
+    const tmpContent = `
+:- working_directory(_, '${baseDir.replace(/\\/g,"/")}').
 :- consult('${mainPl.replace(/\\/g, "/")}').
 :- initialization(load_all).
 
 run_query :-
-    ( ${query} -> write('true'); write('false') ), nl.
-`);
+    ( ${sanitizedQuery} -> write('true'); write('false') ).
+`;
+
+    fs.writeFileSync(tmpFile, tmpContent);
 
     // Стартираме SWI-Prolog
     execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
@@ -88,21 +94,23 @@ run_query :-
   }
 });
 
-// GET /prolog-files
-// Връща списък с файлове и старт предикатите
+// GET /prolog-files/:domain
+// Връща списък с файлове и старт предикати (чрез help)
 app.get("/prolog-files/:domain", async (req, res) => {
   const { domain } = req.params;
-  try {
-    const mainPl = await loadDomain(domain);
 
-    // Временен файл за извикване на help
-    const tmpFile = path.join(__dirname, "runtime", domain, "temp_help.pl");
-    fs.writeFileSync(tmpFile, `
+  try {
+    const { mainPl, baseDir } = await loadDomain(domain);
+
+    const tmpFile = path.join(baseDir, `temp_help_${Date.now()}.pl`);
+    const tmpContent = `
+:- working_directory(_, '${baseDir.replace(/\\/g,"/")}').
 :- consult('${mainPl.replace(/\\/g, "/")}').
 :- initialization(load_all).
 
 run_query :- help.
-`);
+`;
+    fs.writeFileSync(tmpFile, tmpContent);
 
     execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
       if (error) {
