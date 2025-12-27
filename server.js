@@ -28,7 +28,7 @@ async function loadDomain(domain) {
   // Вземаме списъка с файлове
   const { data: files, error } = await supabase
     .storage
-    .from("prolog-files") // твоя bucket
+    .from("prolog-files")
     .list(domain);
 
   if (error) throw error;
@@ -48,7 +48,6 @@ async function loadDomain(domain) {
     fs.writeFileSync(localPath, buffer);
   }
 
-  // Връщаме пътя към main.pl
   return path.join(baseDir, "main.pl");
 }
 
@@ -63,11 +62,14 @@ app.post("/prolog-run", async (req, res) => {
   try {
     const mainPl = await loadDomain(domain);
 
-    // Създаваме временен файл с run_query
+    // Временен файл с run_query, който зарежда main.pl и извиква load_all
     const tmpFile = path.join(__dirname, "runtime", domain, "temp_query.pl");
     fs.writeFileSync(tmpFile, `
 :- consult('${mainPl.replace(/\\/g, "/")}').
-run_query :- ${query}, write('true'), nl.
+:- initialization(load_all).
+
+run_query :-
+    ( ${query} -> write('true'); write('false') ), nl.
 `);
 
     // Стартираме SWI-Prolog
@@ -78,6 +80,36 @@ run_query :- ${query}, write('true'), nl.
         return res.status(500).json({ error: stderr || error.message });
       }
       res.json({ result: stdout.trim() || "false" });
+    });
+
+  } catch (err) {
+    console.error("Server Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /prolog-files
+// Връща списък с файлове и старт предикатите
+app.get("/prolog-files/:domain", async (req, res) => {
+  const { domain } = req.params;
+  try {
+    const mainPl = await loadDomain(domain);
+
+    // Временен файл за извикване на help
+    const tmpFile = path.join(__dirname, "runtime", domain, "temp_help.pl");
+    fs.writeFileSync(tmpFile, `
+:- consult('${mainPl.replace(/\\/g, "/")}').
+:- initialization(load_all).
+
+run_query :- help.
+`);
+
+    execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
+      if (error) {
+        console.error("Prolog Error:", error);
+        return res.status(500).json({ error: stderr || error.message });
+      }
+      res.json({ result: stdout.trim() });
     });
 
   } catch (err) {
