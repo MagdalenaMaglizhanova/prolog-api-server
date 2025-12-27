@@ -25,7 +25,7 @@ async function loadDomain(domain) {
   fs.mkdirSync(baseDir, { recursive: true });
 
   // Вземаме списъка с файлове от Supabase bucket "prolog-kb"
-  const { data: files, error } = await supabase.storage.from("prolog-kb").list(domain);
+  const { data: files, error } = await supabase.storage.from("prolog-files").list(domain);
   if (error) throw error;
 
   for (const file of files) {
@@ -35,7 +35,7 @@ async function loadDomain(domain) {
 
     const { data, error: downloadErr } = await supabase
       .storage
-      .from("prolog-kb")
+      .from("prolog-files")
       .download(`${domain}/${file.name}`);
 
     if (downloadErr) throw downloadErr;
