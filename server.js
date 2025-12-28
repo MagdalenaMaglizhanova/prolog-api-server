@@ -42,8 +42,8 @@ async function loadDomain(domain) {
     if (!file.name.endsWith(".pl")) continue;
 
     const localPath = path.join(baseDir, file.name);
-    if (fs.existsSync(localPath)) continue;
 
+    // презареждаме винаги (по-безопасно за development)
     const { data } = await supabase
       .storage
       .from("prolog-files")
@@ -73,8 +73,9 @@ function startProlog(mainPl) {
     console.error("PL ERR:", data.toString());
   });
 
-  // consult main.pl
-  prolog.stdin.write(`consult('${mainPl.replace(/\\/g, "/")}').\n`);
+  const normalizedPath = mainPl.replace(/\\/g, "/");
+
+  prolog.stdin.write(`consult('${normalizedPath}').\n`);
   prolog.stdin.write(`load_all.\n`);
 }
 
@@ -94,23 +95,28 @@ app.post("/prolog-run", async (req, res) => {
     }
 
     let output = "";
+
     const onData = data => {
       output += data.toString();
+
+      // КРАЙ на заявката (SWI-style)
+      if (
+        output.trim().endsWith("false") ||
+        output.trim().endsWith("true")
+      ) {
+        prolog.stdout.off("data", onData);
+        res.json({ result: output.trim() });
+      }
     };
 
-    prolog.stdout.once("data", onData);
+    prolog.stdout.on("data", onData);
 
-    // пращаме заявката
-    prolog.stdin.write(query.trim().endsWith(".")
-      ? query + "\n"
-      : query + ".\n"
+    // махаме точка ако има и винаги ползваме run_all/1
+    const cleanQuery = query.trim().replace(/\.$/, "");
+
+    prolog.stdin.write(
+      `run_all((${cleanQuery})).\n`
     );
-
-    // малък delay за резултат
-    setTimeout(() => {
-      prolog.stdout.removeListener("data", onData);
-      res.json({ result: output.trim() || "false" });
-    }, 200);
 
   } catch (err) {
     console.error(err);
