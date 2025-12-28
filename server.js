@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const cors = require("cors");
 const { execFile } = require("child_process");
@@ -25,10 +24,9 @@ async function loadDomain(domain) {
   const baseDir = path.join(__dirname, "runtime", domain);
   fs.mkdirSync(baseDir, { recursive: true });
 
-  // Вземаме списъка с файлове
   const { data: files, error } = await supabase
     .storage
-    .from("prolog-files") // твоя bucket
+    .from("prolog-files")
     .list(domain);
 
   if (error) throw error;
@@ -48,7 +46,6 @@ async function loadDomain(domain) {
     fs.writeFileSync(localPath, buffer);
   }
 
-  // Връщаме пътя към main.pl
   return path.join(baseDir, "main.pl");
 }
 
@@ -65,21 +62,27 @@ app.post("/prolog-run", async (req, res) => {
 
     // Създаваме временен файл с run_query
     const tmpFile = path.join(__dirname, "runtime", domain, "temp_query.pl");
+    // Важното: махаме 'write('true')', оставяме чисто query
     fs.writeFileSync(tmpFile, `
 :- consult('${mainPl.replace(/\\/g, "/")}').
-run_query :- ${query}, write('true'), nl.
+run_query :- ${query}.
 `);
 
     // Стартираме SWI-Prolog
-    execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
-      if (error) {
-        console.error("Prolog Error:", error);
-        console.error("Prolog Stderr:", stderr);
-        return res.status(500).json({ error: stderr || error.message });
-      }
-      res.json({ result: stdout.trim() || "false" });
-    });
+    execFile(
+      "swipl",
+      ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"],
+      (error, stdout, stderr) => {
+        if (error) {
+          console.error("Prolog Error:", error);
+          console.error("Prolog Stderr:", stderr);
+          return res.status(500).json({ error: stderr || error.message });
+        }
 
+        // Връщаме stdout като резултат
+        res.json({ result: stdout.trim() || "false" });
+      }
+    );
   } catch (err) {
     console.error("Server Error:", err);
     res.status(500).json({ error: err.message });
