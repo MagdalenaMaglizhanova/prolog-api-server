@@ -1,8 +1,9 @@
+// server.js
 const express = require("express");
 const cors = require("cors");
+const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-const { spawn } = require("child_process");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -11,91 +12,80 @@ const port = process.env.PORT || 10001;
 app.use(cors());
 app.use(express.json());
 
+// Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
 
-let prolog = null;
-let currentDomain = null;
-
-// ---------- Helper: load domain ----------
+// Helper: зареждане на domain от Supabase
 async function loadDomain(domain) {
-  if (!domain.match(/^[a-z_]+$/)) throw new Error("Invalid domain");
+  if (!domain.match(/^[a-z]+$/)) throw new Error("Invalid domain name");
 
   const baseDir = path.join(__dirname, "runtime", domain);
   fs.mkdirSync(baseDir, { recursive: true });
 
-  const { data: files, error } = await supabase.storage.from("prolog-files").list(domain);
+  // Вземаме списъка с файлове
+  const { data: files, error } = await supabase
+    .storage
+    .from("prolog-files") // твоя bucket
+    .list(domain);
+
   if (error) throw error;
 
   for (const file of files) {
     if (!file.name.endsWith(".pl")) continue;
+
     const localPath = path.join(baseDir, file.name);
     if (fs.existsSync(localPath)) continue;
 
-    const { data } = await supabase.storage.from("prolog-files").download(`${domain}/${file.name}`);
+    const { data } = await supabase
+      .storage
+      .from("prolog-files")
+      .download(`${domain}/${file.name}`);
+
     const buffer = Buffer.from(await data.arrayBuffer());
     fs.writeFileSync(localPath, buffer);
   }
 
+  // Връщаме пътя към main.pl
   return path.join(baseDir, "main.pl");
 }
 
-// ---------- Start Prolog ----------
-function startProlog(mainPl) {
-  if (prolog) {
-    prolog.kill();
-    prolog = null;
-  }
-
-  prolog = spawn("swipl", ["-q"]);
-
-  prolog.stdout.on("data", data => {
-    console.log("PL:", data.toString());
-  });
-
-  prolog.stderr.on("data", data => {
-    console.error("PL ERR:", data.toString());
-  });
-
-  prolog.stdin.write(`consult('${mainPl.replace(/\\/g, "/")}').\n`);
-  prolog.stdin.write(`init('${path.dirname(mainPl).replace(/\\/g, "/")}').\n`);
-}
-
-// ---------- POST /prolog-run ----------
+// POST /prolog-run
+// Приема { query: "bird(X).", domain: "animals" }
 app.post("/prolog-run", async (req, res) => {
   const { query, domain } = req.body;
-  if (!query) return res.status(400).json({ error: "No query" });
-  if (!domain) return res.status(400).json({ error: "No domain" });
+
+  if (!query) return res.status(400).json({ error: "No query provided" });
+  if (!domain) return res.status(400).json({ error: "No domain specified" });
 
   try {
-    if (domain !== currentDomain) {
-      const mainPl = await loadDomain(domain);
-      startProlog(mainPl);
-      currentDomain = domain;
-    }
+    const mainPl = await loadDomain(domain);
 
-    let output = "";
-    const onData = data => {
-      output += data.toString();
-    };
+    // Създаваме временен файл с run_query
+    const tmpFile = path.join(__dirname, "runtime", domain, "temp_query.pl");
+    fs.writeFileSync(tmpFile, `
+:- consult('${mainPl.replace(/\\/g, "/")}').
+run_query :- ${query}, write('true'), nl.
+`);
 
-    prolog.stdout.once("data", onData);
-
-    prolog.stdin.write(query.trim().endsWith(".") ? query + "\n" : query + ".\n");
-
-    setTimeout(() => {
-      prolog.stdout.removeListener("data", onData);
-      res.json({ result: output.trim() || "false" });
-    }, 200);
+    // Стартираме SWI-Prolog
+    execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
+      if (error) {
+        console.error("Prolog Error:", error);
+        console.error("Prolog Stderr:", stderr);
+        return res.status(500).json({ error: stderr || error.message });
+      }
+      res.json({ result: stdout.trim() || "false" });
+    });
 
   } catch (err) {
-    console.error(err);
+    console.error("Server Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(port, () => {
-  console.log(`🔥 Prolog REPL server running on port ${port}`);
+  console.log(`Supabase Prolog server running on port ${port}`);
 });
