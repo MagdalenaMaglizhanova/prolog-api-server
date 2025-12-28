@@ -1,9 +1,9 @@
 // server.js
 const express = require("express");
 const cors = require("cors");
-const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const { spawn } = require("child_process");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -12,23 +12,28 @@ const port = process.env.PORT || 10001;
 app.use(cors());
 app.use(express.json());
 
-// Supabase client
+// ---------- Supabase ----------
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
 
-// Helper: зареждане на domain от Supabase
+// ---------- Runtime ----------
+let prolog = null;
+let currentDomain = null;
+
+// ---------- Helper: load domain ----------
 async function loadDomain(domain) {
-  if (!domain.match(/^[a-z]+$/)) throw new Error("Invalid domain name");
+  if (!domain.match(/^[a-z]+$/)) {
+    throw new Error("Invalid domain");
+  }
 
   const baseDir = path.join(__dirname, "runtime", domain);
   fs.mkdirSync(baseDir, { recursive: true });
 
-  // Вземаме списъка с файлове
   const { data: files, error } = await supabase
     .storage
-    .from("prolog-files") // твоя bucket
+    .from("prolog-files")
     .list(domain);
 
   if (error) throw error;
@@ -48,44 +53,71 @@ async function loadDomain(domain) {
     fs.writeFileSync(localPath, buffer);
   }
 
-  // Връщаме пътя към main.pl
   return path.join(baseDir, "main.pl");
 }
 
-// POST /prolog-run
-// Приема { query: "bird(X).", domain: "animals" }
+// ---------- Start Prolog ----------
+function startProlog(mainPl) {
+  if (prolog) {
+    prolog.kill();
+    prolog = null;
+  }
+
+  prolog = spawn("swipl", ["-q"]);
+
+  prolog.stdout.on("data", data => {
+    console.log("PL:", data.toString());
+  });
+
+  prolog.stderr.on("data", data => {
+    console.error("PL ERR:", data.toString());
+  });
+
+  // consult main.pl
+  prolog.stdin.write(`consult('${mainPl.replace(/\\/g, "/")}').\n`);
+  prolog.stdin.write(`load_all.\n`);
+}
+
+// ---------- POST /prolog-run ----------
 app.post("/prolog-run", async (req, res) => {
   const { query, domain } = req.body;
 
-  if (!query) return res.status(400).json({ error: "No query provided" });
-  if (!domain) return res.status(400).json({ error: "No domain specified" });
+  if (!query) return res.status(400).json({ error: "No query" });
+  if (!domain) return res.status(400).json({ error: "No domain" });
 
   try {
-    const mainPl = await loadDomain(domain);
+    // ако домейнът се смени → рестарт на Prolog
+    if (domain !== currentDomain) {
+      const mainPl = await loadDomain(domain);
+      startProlog(mainPl);
+      currentDomain = domain;
+    }
 
-    // Създаваме временен файл с run_query
-    const tmpFile = path.join(__dirname, "runtime", domain, "temp_query.pl");
-    fs.writeFileSync(tmpFile, `
-:- consult('${mainPl.replace(/\\/g, "/")}').
-run_query :- ${query}, write('true'), nl.
-`);
+    let output = "";
+    const onData = data => {
+      output += data.toString();
+    };
 
-    // Стартираме SWI-Prolog
-    execFile("swipl", ["-q", "-s", tmpFile, "-g", "run_query", "-t", "halt"], (error, stdout, stderr) => {
-      if (error) {
-        console.error("Prolog Error:", error);
-        console.error("Prolog Stderr:", stderr);
-        return res.status(500).json({ error: stderr || error.message });
-      }
-      res.json({ result: stdout.trim() || "false" });
-    });
+    prolog.stdout.once("data", onData);
+
+    // пращаме заявката
+    prolog.stdin.write(query.trim().endsWith(".")
+      ? query + "\n"
+      : query + ".\n"
+    );
+
+    // малък delay за резултат
+    setTimeout(() => {
+      prolog.stdout.removeListener("data", onData);
+      res.json({ result: output.trim() || "false" });
+    }, 200);
 
   } catch (err) {
-    console.error("Server Error:", err);
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(port, () => {
-  console.log(`Supabase Prolog server running on port ${port}`);
+  console.log(`🔥 Prolog REPL server running on port ${port}`);
 });
