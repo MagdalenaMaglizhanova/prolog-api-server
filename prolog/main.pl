@@ -2,7 +2,6 @@
 :- dynamic active_file/1.
 :- dynamic runtime_dir/1.
 
-% Задава се от Node
 set_runtime_dir(Dir) :-
     retractall(runtime_dir(_)),
     assertz(runtime_dir(Dir)).
