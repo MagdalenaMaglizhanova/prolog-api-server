@@ -3,7 +3,7 @@
 :- dynamic runtime_dir/1.
 
 % ========================================
-% SYSTEM COMMANDS
+% SYSTEM COMMANDS (ENGLISH ONLY)
 % ========================================
 
 set_runtime_dir(Dir) :-
@@ -12,7 +12,7 @@ set_runtime_dir(Dir) :-
     format('Runtime dir set to: ~w~n', [Dir]).
 
 help :-
-    writeln('HELP - Commands'),
+    writeln('HELP - Available Commands'),
     writeln('========================================'),
     writeln('FILE MANAGEMENT:'),
     writeln('  help.                    - Show this help'),
@@ -22,12 +22,13 @@ help :-
     writeln('  unload_file(File).       - Unload specific file'),
     writeln('  unload_all.              - Unload all files'),
     writeln('  switch_file(NewFile).    - Switch to new file'),
-    writeln('  clear_all_facts.         - Clear all facts from memory'),
+    writeln('  clear_all.               - Clear all facts from memory'),
     writeln('  list_files.              - List loaded files'),
     writeln('  current_file.            - Show active file'),
     writeln('  list_predicates.         - List predicates in active file'),
+    writeln('  list_runtime_files.      - List all .pl files in runtime dir'),
     writeln('EXECUTION:'),
-    writeln('  Any Prolog query (e.g. fly(X)).'),
+    writeln('  Any standard Prolog query (e.g. fly(X)).'),
     writeln('========================================').
 
 % ========================================
@@ -37,8 +38,15 @@ help :-
 load_all :-
     runtime_dir(Dir),
     format('Looking for files in: ~w~n', [Dir]),
-    expand_file_name(Dir, [ExpandedDir]),
-    atomic_list_concat([ExpandedDir, '/*.pl'], Pattern, ''),
+    % Първо разширяваме директорията
+    (   expand_file_name(Dir, [ExpandedDir])
+    ->  true
+    ;   ExpandedDir = Dir
+    ),
+    % Създаваме pattern за търсене
+    atomic_list_concat([ExpandedDir, '/*.pl'], Pattern),
+    format('Search pattern: ~w~n', [Pattern]),
+    % Търсим всички .pl файлове
     expand_file_name(Pattern, PlFiles),
     format('Found Prolog files: ~w~n', [PlFiles]),
     (   PlFiles = []
@@ -61,7 +69,6 @@ consult(File) :-
     ->  format('Found file at: ~w~n', [AbsPath]),
         load_file_with_tracking(AbsPath)
     ;   format('File not found via absolute_file_name: ~w~n', [File]),
-
         (   runtime_dir(Dir)
         ->  atomic_list_concat([Dir, '/', File], Path),
             (   exists_file(Path)
@@ -135,18 +142,15 @@ switch_file(NewFile) :-
 % ========================================
 
 
-clear_all_facts :-
-    writeln('Clearing all dynamic predicates from active file...'),
-    (   active_file(File)
-    ->  format('Active file: ~w~n', [File]),
-
-        current_predicate(Pred/Arity),
-        predicate_property(Pred, dynamic),
-        format('  Retracting: ~w/~w~n', [Pred, Arity]),
-        retractall(Pred),
-        fail  
-    ;   true
-    ),
+clear_all :-
+    writeln('Clearing all dynamic predicates...'),
+    current_predicate(Pred/Arity),
+    predicate_property(Pred, dynamic),
+    \+ member(Pred, [loaded_file/1, active_file/1, runtime_dir/1]), % Не изтрива системните
+    format('  Retracting: ~w/~w~n', [Pred, Arity]),
+    retractall(Pred),
+    fail.  % Force backtracking to clear all
+clear_all :-
     writeln('All dynamic facts cleared').
 
 % ========================================
@@ -157,7 +161,8 @@ list_files :-
     findall(F, loaded_file(F), Files),
     (   Files = []
     ->  writeln('No files loaded')
-    ;   format('Loaded files (~w): ~w~n', [length(Files), Files])
+    ;   format('Loaded files (~w):~n', [length(Files)]),
+        forall(member(F, Files), format('  ~w~n', [F]))
     ).
 
 current_file :-
@@ -173,11 +178,12 @@ list_predicates :-
         current_predicate(Pred/Arity),
         predicate_property(Pred, dynamic),
         format('  ~w/~w~n', [Pred, Arity]),
-        fail  
+        fail  % backtrack for all predicates
     ;   writeln('No active file to list predicates from')
     ),
     writeln('(end of list)').
 
+% Utility predicates (not in help - for internal use)
 get_full_path(Filename, FullPath) :-
     runtime_dir(Dir),
     atomic_list_concat([Dir, '/', Filename], FullPath).
@@ -188,8 +194,35 @@ file_in_runtime(Filename) :-
 
 list_runtime_files :-
     runtime_dir(Dir),
-    expand_file_name(Dir, [ExpandedDir]),
-    atomic_list_concat([ExpandedDir, '/*.pl'], Pattern, ''),
+    (   expand_file_name(Dir, [ExpandedDir])
+    ->  true
+    ;   ExpandedDir = Dir
+    ),
+    atomic_list_concat([ExpandedDir, '/*.pl'], Pattern),
     expand_file_name(Pattern, Files),
-    format('Files in runtime directory:~n'),
-    forall(member(F, Files), format('  ~w~n', [F])).
+    format('Files in runtime directory (~w):~n', [Dir]),
+    (   Files = []
+    ->  writeln('  No .pl files found')
+    ;   forall(member(F, Files), 
+            (   file_base_name(F, Name),
+                format('  ~w~n', [Name])
+            ))
+    ).
+
+% ========================================
+% INITIALIZATION
+% ========================================
+
+:- initialization((
+    writeln('========================================'),
+    writeln('PROLOG FILE MANAGEMENT SYSTEM'),
+    writeln('Version 1.1 - Fixed load_all issue'),
+    writeln('Type "help." to see available commands.'),
+    writeln('========================================'),
+    % Set default runtime directory
+    (   \+ runtime_dir(_)
+    ->  working_directory(Dir, Dir),
+        set_runtime_dir(Dir)
+    ;   true
+    )
+)).
