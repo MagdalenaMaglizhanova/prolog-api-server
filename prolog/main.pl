@@ -14,13 +14,11 @@ set_runtime_dir(Dir) :-
 help :-
     writeln('HELP - Commands'),
     writeln('========================================'),
-    writeln('STANDARD PROLOG COMMANDS:'),
-    writeln('  [File].                  - Consult file (standard Prolog)'),
-    writeln('  consult(File).           - Consult file (standard Prolog)'),
-    writeln('  reconsult(File).         - Reconsult file (standard Prolog)'),
-    writeln('SYSTEM EXTENSIONS:'),
+    writeln('FILE MANAGEMENT:'),
     writeln('  help.                    - Show this help'),
     writeln('  load_all.                - Load all .pl files'),
+    writeln('  consult(File).           - Load specific file'),
+    writeln('  reconsult(File).         - Reload file (clear + load)'),
     writeln('  unload_file(File).       - Unload specific file'),
     writeln('  unload_all.              - Unload all files'),
     writeln('  switch_file(NewFile).    - Switch to new file'),
@@ -28,109 +26,77 @@ help :-
     writeln('  list_files.              - List loaded files'),
     writeln('  current_file.            - Show active file'),
     writeln('  list_predicates.         - List predicates in active file'),
-    writeln('  system_info.             - Show system information'),
     writeln('EXECUTION:'),
     writeln('  Any Prolog query (e.g. fly(X)).'),
     writeln('========================================').
 
-system_info :-
-    format('=== Prolog System Information ===~n', []),
-    format('Runtime directory: ~w~n', [runtime_dir]),
-    format('Loaded files: ~w~n', [loaded_file]),
-    format('Active file: ~w~n', [active_file]),
-    writeln('===============================').
-
 % ========================================
-% FILE LOADING (STANDARD PROLOG COMPATIBILITY)
-% ========================================
-
-% Standard Prolog consult - override
-user:consult(File) :-
-    (   atom_concat(_, '.pl', File) -> true
-    ;   atom_concat(File, '.pl', _)
-    ),
-    !,
-    format('Consulting: ~w~n', [File]),
-    consult_file_internal(File).
-
-% Loading via [filename] syntax
-user:(File) :-
-    atom(File),
-    (   atom_concat(_, '.pl', File) -> true
-    ;   atom_concat(File, '.pl', _)
-    ),
-    !,
-    format('Consulting: ~w~n', [File]),
-    consult_file_internal(File).
-
-% Internal helper function for loading
-consult_file_internal(File) :-
-    % Check for absolute or relative path
-    (   exists_file(File)
-    ->  Path = File
-    ;   runtime_dir(Dir),
-        atomic_list_concat([Dir, '/', File], Path)
-    ),
-    
-    format('Full path: ~w~n', [Path]),
-    (   exists_file(Path)
-    ->  (   catch(standard_consult(Path), Error,
-                (format('[ERROR] Syntax error in ~w: ~w~n', [File, Error]),
-                 fail))
-        ->  retractall(active_file(_)),
-            assertz(active_file(File)),
-            (   loaded_file(File) -> true ; assertz(loaded_file(File))),
-            format('[OK] Consulted ~w~n', [File])
-        ;   format('[WARNING] consult failed for ~w~n', [File]),
-            fail
-        )
-    ;   format('[ERROR] File does not exist: ~w~n', [Path]),
-        fail
-    ).
-
-% Use standard consult
-standard_consult(File) :-
-    consult(File).
-
-% Standard reconsult
-user:reconsult(File) :-
-    format('Reconsulting: ~w~n', [File]),
-    (   loaded_file(File)
-    ->  unload_file_internal(File)
-    ;   true
-    ),
-    consult_file_internal(File).
-
-% ========================================
-% EXTENDED FILE LOADING
+% FILE LOADING 
 % ========================================
 
 load_all :-
     runtime_dir(Dir),
     format('Looking for files in: ~w~n', [Dir]),
-    directory_files(Dir, Files),
-    format('Found files: ~w~n', [Files]),
-    findall(F, (member(F, Files), file_name_extension(_, pl, F)), PlFiles),
-    format('Prolog files: ~w~n', [PlFiles]),
+    expand_file_name(Dir, [ExpandedDir]),
+    atomic_list_concat([ExpandedDir, '/*.pl'], Pattern, ''),
+    expand_file_name(Pattern, PlFiles),
+    format('Found Prolog files: ~w~n', [PlFiles]),
     (   PlFiles = []
     ->  writeln('No Prolog files found in directory'),
         fail
     ;   forall(
-            member(File, PlFiles),
-            (   catch(consult_file_internal(File), Error,
-                    format('[ERROR] Failed to consult ~w: ~w~n', [File, Error]))
+            member(Path, PlFiles),
+            (   catch(load_file_with_tracking(Path), Error,
+                    format('[ERROR] Failed to load ~w: ~w~n', [Path, Error]))
             )
         ),
         findall(F, loaded_file(F), LoadedFiles),
         format('Successfully loaded ~w files: ~w~n', [length(LoadedFiles), LoadedFiles])
     ).
 
+
+consult(File) :-
+    format('Attempting to consult: ~w~n', [File]),
+    (   absolute_file_name(File, AbsPath, [file_type(prolog), access(read)])
+    ->  format('Found file at: ~w~n', [AbsPath]),
+        load_file_with_tracking(AbsPath)
+    ;   format('File not found via absolute_file_name: ~w~n', [File]),
+
+        (   runtime_dir(Dir)
+        ->  atomic_list_concat([Dir, '/', File], Path),
+            (   exists_file(Path)
+            ->  format('Found in runtime dir: ~w~n', [Path]),
+                load_file_with_tracking(Path)
+            ;   format('[ERROR] File does not exist: ~w~n', [Path]),
+                fail
+            )
+        ;   format('[ERROR] No runtime directory set~n'),
+            fail
+        )
+    ).
+
+
+load_file_with_tracking(Path) :-
+    format('Loading with tracking: ~w~n', [Path]),
+    (   catch(prolog:consult(Path), Error,
+            (format('[ERROR] Syntax error in ~w: ~w~n', [Path, Error]),
+             fail))
+    ->  
+        file_base_name(Path, FileName),
+        retractall(active_file(_)),
+        assertz(active_file(FileName)),
+        (   loaded_file(FileName) -> true ; assertz(loaded_file(FileName))),
+        format('[OK] Loaded ~w (active)~n', [FileName])
+    ;   format('[WARNING] consult failed for ~w~n', [Path]),
+        fail
+    ).
+
 % ========================================
 % FILE UNLOADING
 % ========================================
 
-% Internal file unloading
-unload_file_internal(File) :-
+
+unload_file(File) :-
     format('Unloading file: ~w~n', [File]),
     retractall(loaded_file(File)),
     (   active_file(File)
@@ -139,44 +105,46 @@ unload_file_internal(File) :-
     ;   format('File ~w unloaded (was not active)~n', [File])
     ).
 
-% Public unload command
-unload_file(File) :-
-    unload_file_internal(File).
 
-% Unload all files
 unload_all :-
     findall(F, loaded_file(F), Files),
     (   Files = []
     ->  writeln('No files to unload')
-    ;   forall(member(F, Files), unload_file_internal(F)),
+    ;   forall(member(F, Files), unload_file(F)),
         length(Files, Count),
         format('All ~w files unloaded~n', [Count])
     ).
 
-% Switch to new file
+
+reconsult(File) :-
+    format('Reconsulting file: ~w~n', [File]),
+    unload_file(File),
+    consult(File).
+
+
 switch_file(NewFile) :-
     (   active_file(CurrentFile)
     ->  format('Switching from ~w to ~w~n', [CurrentFile, NewFile]),
-        unload_file_internal(CurrentFile)
+        unload_file(CurrentFile)
     ;   true
     ),
-    consult_file_internal(NewFile).
+    consult(NewFile).
 
 % ========================================
 % KNOWLEDGE BASE MANAGEMENT
 % ========================================
 
+
 clear_all_facts :-
     writeln('Clearing all dynamic predicates from active file...'),
     (   active_file(File)
     ->  format('Active file: ~w~n', [File]),
-        % Clear all dynamic predicates
+
         current_predicate(Pred/Arity),
         predicate_property(Pred, dynamic),
-        \+ predicate_property(Pred, built_in),
         format('  Retracting: ~w/~w~n', [Pred, Arity]),
         retractall(Pred),
-        fail  % backtrack for all predicates
+        fail  
     ;   true
     ),
     writeln('All dynamic facts cleared').
@@ -198,96 +166,30 @@ current_file :-
     ;   writeln('No active file')
     ).
 
+
 list_predicates :-
     (   active_file(File)
     ->  format('Dynamic predicates in ~w:~n', [File]),
         current_predicate(Pred/Arity),
         predicate_property(Pred, dynamic),
-        \+ predicate_property(Pred, built_in),
         format('  ~w/~w~n', [Pred, Arity]),
-        fail  % backtrack for all predicates
+        fail  
     ;   writeln('No active file to list predicates from')
     ),
     writeln('(end of list)').
 
-% ========================================
-% INITIALIZATION
-% ========================================
-
-% Auto initialization
-:- initialization(
-    (   current_prolog_flag(argv, Args),
-        (   member('--dir', Args),
-            nextto('--dir', Dir, Args)
-        ->  set_runtime_dir(Dir)
-        ;   working_directory(Dir, Dir),
-            set_runtime_dir(Dir)
-        ),
-        format('=== Prolog Environment Initialized ===~n', []),
-        format('Runtime directory: ~w~n', [Dir]),
-        format('Type help. for available commands.~n'),
-        format('====================================~n')
-    )
-).
-
-% ========================================
-% DOMAIN MANAGEMENT EXTENSIONS
-% ========================================
-
-% Select domain command
-select_domain(Domain) :-
-    format('Selecting domain: ~w~n', [Domain]),
+get_full_path(Filename, FullPath) :-
     runtime_dir(Dir),
-    atomic_list_concat([Dir, '/', Domain, '.pl'], Path),
-    (   exists_file(Path)
-    ->  consult_file_internal(Path),
-        format('Domain ~w loaded successfully.~n', [Domain])
-    ;   atomic_list_concat([Dir, '/domains/', Domain, '.pl'], Path2),
-        (   exists_file(Path2)
-        ->  consult_file_internal(Path2),
-            format('Domain ~w loaded from domains directory.~n', [Domain])
-        ;   format('Domain file ~w.pl not found.~n', [Domain]),
-            format('Looking in: ~w and ~w/domains/~n', [Dir, Dir]),
-            fail
-        )
-    ).
+    atomic_list_concat([Dir, '/', Filename], FullPath).
 
-% Command handler for HTTP requests
-process_command(Command, Output) :-
-    catch(
-        (   (   Command = help
-            ->  help
-            ;   Command = list_files
-            ->  list_files
-            ;   Command = load_all
-            ->  load_all
-            ;   Command = system_info
-            ->  system_info
-            ;   atom_concat('consult_file(', Rest, Command),
-                sub_atom(Rest, 0, _, 1, FileName)
-            ->  consult_file_internal(FileName)
-            ;   atom_concat('select_domain(', Rest2, Command),
-                sub_atom(Rest2, 0, _, 1, Domain)
-            ->  select_domain(Domain)
-            ;   % For other commands, try to execute them
-                term_string(Term, Command),
-                call(Term)
-            )
-        ),
-        Output = 'Command executed successfully.'
-    ),
-    catch(
-        with_output_to(string(Output), 
-            (   listing(loaded_file/1),
-                listing(active_file/1)
-            )
-        ),
-        _,
-        Output = 'Command executed but output capture failed.'
-    ).
+file_in_runtime(Filename) :-
+    get_full_path(Filename, Path),
+    exists_file(Path).
 
-% HTTP endpoint handler (simplified)
-handle_query(Code, Query, Response) :-
-    % Store code in a temporary file
-    term_string(QueryTerm, Query),
-    process_command(QueryTerm, Response).
+list_runtime_files :-
+    runtime_dir(Dir),
+    expand_file_name(Dir, [ExpandedDir]),
+    atomic_list_concat([ExpandedDir, '/*.pl'], Pattern, ''),
+    expand_file_name(Pattern, Files),
+    format('Files in runtime directory:~n'),
+    forall(member(F, Files), format('  ~w~n', [F])).
