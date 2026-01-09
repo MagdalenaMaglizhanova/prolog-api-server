@@ -32,21 +32,21 @@ help :-
     writeln('========================================').
 
 % ========================================
-% FILE LOADING 
+% FILE LOADING
 % ========================================
 
 load_all :-
     runtime_dir(Dir),
     format('Looking for files in: ~w~n', [Dir]),
-    % Първо разширяваме директорията
+    % First expand the directory path
     (   expand_file_name(Dir, [ExpandedDir])
     ->  true
     ;   ExpandedDir = Dir
     ),
-    % Създаваме pattern за търсене
+    % Create search pattern
     atomic_list_concat([ExpandedDir, '/*.pl'], Pattern),
     format('Search pattern: ~w~n', [Pattern]),
-    % Търсим всички .pl файлове
+    % Find all .pl files
     expand_file_name(Pattern, PlFiles),
     format('Found Prolog files: ~w~n', [PlFiles]),
     (   PlFiles = []
@@ -61,7 +61,6 @@ load_all :-
         findall(F, loaded_file(F), LoadedFiles),
         format('Successfully loaded ~w files: ~w~n', [length(LoadedFiles), LoadedFiles])
     ).
-
 
 consult(File) :-
     format('Attempting to consult: ~w~n', [File]),
@@ -82,13 +81,12 @@ consult(File) :-
         )
     ).
 
-
 load_file_with_tracking(Path) :-
     format('Loading with tracking: ~w~n', [Path]),
     (   catch(prolog:consult(Path), Error,
             (format('[ERROR] Syntax error in ~w: ~w~n', [Path, Error]),
              fail))
-    ->  
+    ->
         file_base_name(Path, FileName),
         retractall(active_file(_)),
         assertz(active_file(FileName)),
@@ -102,7 +100,6 @@ load_file_with_tracking(Path) :-
 % FILE UNLOADING
 % ========================================
 
-
 unload_file(File) :-
     format('Unloading file: ~w~n', [File]),
     retractall(loaded_file(File)),
@@ -111,7 +108,6 @@ unload_file(File) :-
         format('File ~w unloaded and deactivated~n', [File])
     ;   format('File ~w unloaded (was not active)~n', [File])
     ).
-
 
 unload_all :-
     findall(F, loaded_file(F), Files),
@@ -122,12 +118,10 @@ unload_all :-
         format('All ~w files unloaded~n', [Count])
     ).
 
-
 reconsult(File) :-
     format('Reconsulting file: ~w~n', [File]),
     unload_file(File),
     consult(File).
-
 
 switch_file(NewFile) :-
     (   active_file(CurrentFile)
@@ -141,12 +135,11 @@ switch_file(NewFile) :-
 % KNOWLEDGE BASE MANAGEMENT
 % ========================================
 
-
 clear_all :-
     writeln('Clearing all dynamic predicates...'),
     current_predicate(Pred/Arity),
     predicate_property(Pred, dynamic),
-    \+ member(Pred, [loaded_file/1, active_file/1, runtime_dir/1]), % Не изтрива системните
+    \+ member(Pred, [loaded_file/1, active_file/1, runtime_dir/1]), % Don't remove system predicates
     format('  Retracting: ~w/~w~n', [Pred, Arity]),
     retractall(Pred),
     fail.  % Force backtracking to clear all
@@ -170,7 +163,6 @@ current_file :-
     ->  format('Active file: ~w~n', [F])
     ;   writeln('No active file')
     ).
-
 
 list_predicates :-
     (   active_file(File)
@@ -203,7 +195,7 @@ list_runtime_files :-
     format('Files in runtime directory (~w):~n', [Dir]),
     (   Files = []
     ->  writeln('  No .pl files found')
-    ;   forall(member(F, Files), 
+    ;   forall(member(F, Files),
             (   file_base_name(F, Name),
                 format('  ~w~n', [Name])
             ))
@@ -216,7 +208,7 @@ list_runtime_files :-
 :- initialization((
     writeln('========================================'),
     writeln('PROLOG FILE MANAGEMENT SYSTEM'),
-    writeln('Version 1.1 - Fixed load_all issue'),
+    writeln('Version 1.2 - ASCII only, fixed encoding'),
     writeln('Type "help." to see available commands.'),
     writeln('========================================'),
     % Set default runtime directory
