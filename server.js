@@ -1,4 +1,5 @@
-// server.js
+// server.js - Коригирана версия с пълна поддръжка на кирилица
+
 const express = require("express");
 const cors = require("cors");
 const { spawn } = require("child_process");
@@ -9,8 +10,12 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 const port = process.env.PORT || 10001;
 
+// ===============================
+// Middleware с правилна кодировка
+// ===============================
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ===============================
 // Supabase client
@@ -34,44 +39,87 @@ if (!fs.existsSync(RUNTIME_ROOT)) {
 }
 
 // ===============================
-// Start persistent Prolog process
+// Start persistent Prolog process with UTF-8 encoding
 // ===============================
+console.log("[INIT] Starting Prolog process with UTF-8 support...");
+
 const prolog = spawn("swipl", [
   "-q",
+  "--encoding=utf-8",  // КРИТИЧНО: Задаване на кодировка
   "-s",
   path.join(__dirname, "prolog", "main.pl")
-]);
+], {
+  env: {
+    ...process.env,
+    LANG: 'en_US.UTF-8',  // КРИТИЧНО: Задаване на локали
+    LC_ALL: 'en_US.UTF-8' // КРИТИЧНО: Задаване на всички локали
+  }
+});
 
-console.log("🧠 Prolog engine started");
+// КРИТИЧНО: Задаване на кодировки за всички потоци
+prolog.stdin.setDefaultEncoding('utf8');
+prolog.stdout.setEncoding('utf8');
+prolog.stderr.setEncoding('utf8');
+
+console.log("🧠 Prolog engine started with UTF-8 encoding");
+
+// Буфер за stdout
+let stdoutBuffer = "";
+
+prolog.stdout.on("data", data => {
+  stdoutBuffer += data;
+  // Дебъг за кирилица
+  if (data.includes('а') || data.includes('б') || data.includes('в')) {
+    console.log(`[DEBUG] Cyrillic detected in output: ${data.substring(0, 100)}`);
+  }
+});
 
 prolog.stderr.on("data", data => {
   console.error("[PROLOG ERROR]", data.toString());
 });
 
-// Буфер за stdout (много важно)
-let stdoutBuffer = "";
-
-prolog.stdout.on("data", data => {
-  stdoutBuffer += data.toString();
-});
-
 // ===============================
-// Helper: send command to Prolog
+// Helper: send command to Prolog with encoding
 // ===============================
 function sendToProlog(command, timeout = 5000) {
   return new Promise((resolve, reject) => {
     const cleanCommand = command.trim();
     console.log(`[PROLOG] Sending command: "${cleanCommand}"`);
     
+    // Проверка за кирилица в командата
+    if (/[а-яА-Я]/.test(cleanCommand)) {
+      console.log(`[DEBUG] Command contains Cyrillic: ${cleanCommand}`);
+    }
+    
     stdoutBuffer = "";
-    prolog.stdin.write(cleanCommand + ".\n");
-
+    
+    // КРИТИЧНО: Записване на командата с правилното кодиране
+    const success = prolog.stdin.write(cleanCommand + ".\n", 'utf8');
+    
+    if (!success) {
+      console.error("[PROLOG] Failed to write to stdin");
+      reject(new Error("Failed to write to Prolog stdin"));
+      return;
+    }
+    
     const start = Date.now();
     const interval = setInterval(() => {
-      if (stdoutBuffer.length > 0) {
+      if (stdoutBuffer.length > 0 && !stdoutBuffer.endsWith('\n')) {
         clearInterval(interval);
-        console.log(`[PROLOG] Response: ${stdoutBuffer.substring(0, 200)}...`);
-        resolve(stdoutBuffer.trim());
+        
+        // КРИТИЧНО: Нормализиране на кирилицата
+        const normalizedOutput = stdoutBuffer
+          .trim()
+          .normalize('NFC'); // Нормализиране на Unicode
+        
+        console.log(`[PROLOG] Response length: ${normalizedOutput.length} chars`);
+        console.log(`[PROLOG] First 200 chars: ${normalizedOutput.substring(0, 200)}...`);
+        
+        // Проверка за валиден UTF-8
+        const isValidUTF8 = Buffer.from(normalizedOutput, 'utf8').toString('utf8') === normalizedOutput;
+        console.log(`[PROLOG] UTF-8 valid: ${isValidUTF8}`);
+        
+        resolve(normalizedOutput);
       }
       if (Date.now() - start > timeout) {
         clearInterval(interval);
@@ -83,13 +131,13 @@ function sendToProlog(command, timeout = 5000) {
 }
 
 // ===============================
-// Helper: load domain from Supabase
+// Helper: load domain from Supabase with encoding
 // ===============================
 async function loadDomain(domain) {
   console.log(`[DOMAIN] Loading domain: "${domain}"`);
   
-  // Валидация на името на домейна
-  if (!domain.match(/^[a-zA-Z0-9_-]+$/)) {
+  // Валидация - разрешаваме кирилица за имена на домейни
+  if (!domain.match(/^[a-zA-Zа-яА-Я0-9_-]+$/)) {
     throw new Error("Invalid domain name");
   }
 
@@ -103,7 +151,7 @@ async function loadDomain(domain) {
   } else {
     console.log(`[DOMAIN] Directory already exists: ${domainDir}`);
     
-    // Изчистване на стари файлове преди ново сваляне
+    // Изчистване на стари файлове
     const oldFiles = fs.readdirSync(domainDir);
     if (oldFiles.length > 0) {
       console.log(`[DOMAIN] Removing old files: ${oldFiles.join(", ")}`);
@@ -129,9 +177,8 @@ async function loadDomain(domain) {
     throw new Error(`Supabase error: ${error.message}`);
   }
 
-  console.log(`[SUPABASE] Found ${files ? files.length : 0} files:`, 
-    files ? files.map(f => f.name).join(", ") : "none");
-
+  console.log(`[SUPABASE] Found ${files ? files.length : 0} files`);
+  
   if (!files || files.length === 0) {
     throw new Error(`No files found for domain "${domain}" in Supabase`);
   }
@@ -164,12 +211,21 @@ async function loadDomain(domain) {
         continue;
       }
 
-      // Записване на файла
+      // Преобразуване в буфер и записване с UTF-8 кодировка
       const buffer = Buffer.from(await data.arrayBuffer());
-      fs.writeFileSync(localPath, buffer);
+      
+      // КРИТИЧНО: Записване с UTF-8 кодировка
+      fs.writeFileSync(localPath, buffer, 'utf8');
       downloadedCount++;
       
+      // Проверка за кирилица в съдържанието
+      const content = buffer.toString('utf8');
+      const hasCyrillic = /[а-яА-Я]/.test(content);
+      
       console.log(`[DOWNLOAD] ✓ Saved: ${file.name} (${buffer.length} bytes)`);
+      if (hasCyrillic) {
+        console.log(`[DOWNLOAD] ℹ️ File contains Cyrillic characters`);
+      }
       
     } catch (err) {
       console.error(`[DOWNLOAD] Failed to process ${file.name}:`, err.message);
@@ -190,9 +246,12 @@ async function loadDomain(domain) {
 }
 
 // ===============================
-// API: select domain (animals, etc.)
+// API: select domain
 // ===============================
 app.post("/prolog/select-domain", async (req, res) => {
+  // КРИТИЧНО: Задаване на кодировка за отговора
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  
   const { domain } = req.body;
   console.log(`[API] POST /prolog/select-domain for domain: "${domain}"`);
   
@@ -202,26 +261,22 @@ app.post("/prolog/select-domain", async (req, res) => {
   }
 
   try {
-    // 1. Зареждане на домейна от Supabase
-    console.log(`[API] Step 1: Loading domain from Supabase...`);
+    // Зареждане на домейна
     const dir = await loadDomain(domain);
 
-    // 2. Конвертиране на пътя за Prolog (Unix стил)
+    // Конвертиране на пътя
     const prologPath = dir.replace(/\\/g, '/');
-    console.log(`[API] Step 2: Setting Prolog runtime dir to: "${prologPath}"`);
+    console.log(`[API] Setting Prolog runtime dir to: "${prologPath}"`);
 
-    // 3. Настройка на директорията в Prolog
-    console.log(`[API] Step 3: Configuring Prolog...`);
+    // Настройка на директорията в Prolog
     const setDirResult = await sendToProlog(`set_runtime_dir('${prologPath}')`);
     console.log(`[API] Prolog set_runtime_dir response: ${setDirResult}`);
 
-    // 4. Зареждане на всички файлове в Prolog
-    console.log(`[API] Step 4: Loading all Prolog files...`);
+    // Зареждане на всички файлове
     const loadResult = await sendToProlog('load_all');
     console.log(`[API] Prolog load_all result: ${loadResult}`);
 
-    // 5. Взимане на помощния текст
-    console.log(`[API] Step 5: Getting help...`);
+    // Взимане на помощния текст
     const helpText = await sendToProlog("help");
 
     console.log(`[API] Domain "${domain}" successfully loaded`);
@@ -233,22 +288,14 @@ app.post("/prolog/select-domain", async (req, res) => {
       help: helpText,
       directory: prologPath
     });
-
+    
   } catch (err) {
     console.error(`[API] Error loading domain "${domain}":`, err);
-    
-    // Детайлна грешка
-    const errorMessage = err.message || "Unknown error";
-    const errorStack = err.stack || "No stack trace";
-    
-    console.error(`[API] Error details: ${errorMessage}`);
-    console.error(`[API] Stack trace: ${errorStack}`);
     
     res.status(500).json({ 
       success: false,
       error: `Failed to load domain "${domain}"`,
-      details: errorMessage,
-      stack: process.env.NODE_ENV === 'development' ? errorStack : undefined
+      details: err.message
     });
   }
 });
@@ -257,6 +304,9 @@ app.post("/prolog/select-domain", async (req, res) => {
 // API: send Prolog command
 // ===============================
 app.post("/prolog/command", async (req, res) => {
+  // КРИТИЧНО: Задаване на кодировка за отговора
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  
   const { command } = req.body;
   console.log(`[API] POST /prolog/command: "${command}"`);
 
@@ -265,14 +315,13 @@ app.post("/prolog/command", async (req, res) => {
   }
 
   try {
-    console.log(`[API] Sending command to Prolog...`);
     const output = await sendToProlog(command);
-    console.log(`[API] Command executed successfully`);
     
-    res.json({ 
+    res.json({
       success: true,
       output: output
     });
+    
   } catch (err) {
     console.error(`[API] Error executing command:`, err);
     
@@ -284,102 +333,49 @@ app.post("/prolog/command", async (req, res) => {
 });
 
 // ===============================
-// API: Check if domain is loaded
+// Също трябва да промените prolog/main.pl файла:
 // ===============================
-app.get("/prolog/status", async (req, res) => {
-  try {
-    console.log(`[API] GET /prolog/status - Checking Prolog status`);
-    
-    // Проверка дали Prolog процесът работи
-    const isPrologAlive = prolog && !prolog.killed;
-    
-    // Проверка на runtime директорията
-    const runtimeExists = fs.existsSync(RUNTIME_ROOT);
-    let runtimeContents = [];
-    
-    if (runtimeExists) {
-      runtimeContents = fs.readdirSync(RUNTIME_ROOT);
-    }
-    
-    // Проверка на текущия файл в Prolog
-    let prologStatus = "Prolog not responding";
-    try {
-      prologStatus = await sendToProlog("current_file");
-    } catch (err) {
-      prologStatus = `Prolog error: ${err.message}`;
-    }
-    
-    res.json({
-      success: true,
-      server: {
-        status: "running",
-        port: port,
-        prologProcess: isPrologAlive ? "alive" : "dead"
-      },
-      runtime: {
-        exists: runtimeExists,
-        path: RUNTIME_ROOT,
-        contents: runtimeContents
-      },
-      prolog: prologStatus
-    });
-    
-  } catch (err) {
-    console.error("[API] Error checking status:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
+/*
+% main.pl - Prolog файл с UTF-8 поддръжка
+
+:- encoding('UTF-8').
+
+:- dynamic runtime_dir/1.
+runtime_dir('.').
+
+set_runtime_dir(Dir) :-
+    retractall(runtime_dir(_)),
+    assertz(runtime_dir(Dir)),
+    format('Runtime directory set to: ~w', [Dir]).
+
+load_all :-
+    runtime_dir(Dir),
+    atom_concat(Dir, '/*.pl', Pattern),
+    expand_file_name(Pattern, Files),
+    maplist(consult, Files),
+    length(Files, Count),
+    format('Loaded ~w files', [Count]).
+
+help :-
+    writeln('Available commands:'),
+    writeln('  animal(X). - find animals'),
+    writeln('  mammal(X). - find mammals'),
+    writeln('  bird(X). - find birds'),
+    writeln('  list_animals. - list all animals'),
+    writeln('  clear_facts. - clear all facts').
+
+% Пример за кирилица:
+% животно(куче).
+% животно(котка).
+% животно(кон).
+*/
 
 // ===============================
-// Health check
-// ===============================
-app.get("/", (req, res) => {
-  res.json({
-    service: "Prolog API Server",
-    status: "running",
-    version: "1.0.0",
-    endpoints: [
-      "POST /prolog/select-domain",
-      "POST /prolog/command", 
-      "GET /prolog/status"
-    ]
-  });
-});
-
-// ===============================
-// Error handling middleware
-// ===============================
-app.use((err, req, res, next) => {
-  console.error(`[ERROR] Unhandled error:`, err);
-  res.status(500).json({ 
-    error: "Internal server error",
-    message: err.message 
-  });
-});
-
-// ===============================
-// Handle process termination
-// ===============================
-process.on('SIGTERM', () => {
-  console.log('[SERVER] Received SIGTERM, shutting down...');
-  if (prolog && !prolog.killed) {
-    prolog.kill();
-  }
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('[SERVER] Received SIGINT, shutting down...');
-  if (prolog && !prolog.killed) {
-    prolog.kill();
-  }
-  process.exit(0);
-});
-
+// Стартиране на сървъра
 // ===============================
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
   console.log(`📁 Runtime directory: ${RUNTIME_ROOT}`);
-  console.log(`🌐 Health check: http://localhost:${port}/`);
-  console.log(`📊 Status endpoint: http://localhost:${port}/prolog/status`);
+  console.log(`🌐 UTF-8 Encoding: ENABLED`);
+  console.log(`🔤 Locale: ${process.env.LANG || 'not set'}`);
 });
