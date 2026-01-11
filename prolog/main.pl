@@ -3,11 +3,6 @@
 :- dynamic runtime_dir/1.
 
 % ========================================
-% ENCODING SETTINGS - много важно за кирилица!
-% ========================================
-:- set_prolog_flag(encoding, utf8).
-
-% ========================================
 % SYSTEM COMMANDS
 % ========================================
 
@@ -17,26 +12,26 @@ set_runtime_dir(Dir) :-
     format('Runtime dir set to: ~w~n', [Dir]).
 
 help :-
-    format('~s~n', ['HELP - Команди']),
-    format('~s~n', ['========================================']),
-    format('~s~n', ['УПРАВЛЕНИЕ НА ФАЙЛОВЕ:']),
-    format('~s~n', ['  help.                    - Покажи помощ']),
-    format('~s~n', ['  load_all.                - Зареди всички .pl файлове']),
-    format('~s~n', ['  consult_file(File).      - Зареди конкретен файл']),
-    format('~s~n', ['  reconsult_file(File).    - Презареди файл (изчисти + зареди)']),
-    format('~s~n', ['  unload_file(File).       - Разтовари файл']),
-    format('~s~n', ['  unload_all.              - Разтовари всички файлове']),
-    format('~s~n', ['  switch_file(NewFile).    - Превключи към нов файл']),
-    format('~s~n', ['  clear_all_facts.         - Изчисти всички факти от паметта']),
-    format('~s~n', ['  list_files.              - Покажи заредените файлове']),
-    format('~s~n', ['  current_file.            - Покажи активния файл']),
-    format('~s~n', ['  list_predicates.         - Покажи предикатите в активния файл']),
-    format('~s~n', ['ИЗПЪЛНЕНИЕ:']),
-    format('~s~n', ['  Всякакви Prolog заявки (например menu.).']),
-    format('~s~n', ['========================================']).
+    writeln('HELP - Commands'),
+    writeln('========================================'),
+    writeln('FILE MANAGEMENT:'),
+    writeln('  help.                    - Show this help'),
+    writeln('  load_all.                - Load all .pl files'),
+    writeln('  consult_file(File).      - Load specific file'),
+    writeln('  reconsult_file(File).    - Reload file (clear + load)'),
+    writeln('  unload_file(File).       - Unload specific file'),
+    writeln('  unload_all.              - Unload all files'),
+    writeln('  switch_file(NewFile).    - Switch to new file'),
+    writeln('  clear_all_facts.         - Clear all facts from memory'),
+    writeln('  list_files.              - List loaded files'),
+    writeln('  current_file.            - Show active file'),
+    writeln('  list_predicates.         - List predicates in active file'),
+    writeln('EXECUTION:'),
+    writeln('  Any Prolog query (e.g. fly(X)).'),
+    writeln('========================================').
 
 % ========================================
-% FILE LOADING (променено за кирилица)
+% FILE LOADING
 % ========================================
 
 load_all :-
@@ -44,15 +39,7 @@ load_all :-
     format('Looking for files in: ~w~n', [Dir]),
     directory_files(Dir, Files),
     format('Found files: ~w~n', [Files]),
-    
-    % Намиране на всички .pl файлове, включително с кирилица
-    findall(F, 
-        (member(F, Files), 
-         (file_name_extension(_, pl, F); 
-          sub_atom(F, _, 3, 0, '.pl') ; 
-          sub_atom(F, _, 3, 0, '.PL'))), 
-        PlFiles),
-    
+    findall(F, (member(F, Files), file_name_extension(_, pl, F)), PlFiles),
     format('Prolog files: ~w~n', [PlFiles]),
     (   PlFiles = []
     ->  writeln('No Prolog files found in directory'),
@@ -70,29 +57,17 @@ load_all :-
 consult_file(File) :-
     runtime_dir(Dir),
     format('Consulting file: ~w (from dir: ~w)~n', [File, Dir]),
-    
-    % Декодиране на URL encoded имена на файлове
-    (   sub_atom(File, _, _, _, '%') 
-    ->  uri_encoded(query_value, DecodedFile, File)
-    ;   DecodedFile = File
-    ),
-    
-    atomic_list_concat([Dir, '/', DecodedFile], Path),
+    atomic_list_concat([Dir, '/', File], Path),
     format('Full path: ~w~n', [Path]),
-    
     (   exists_file(Path)
-    ->  % Задаване на UTF-8 encoding за четене на файла
-        open(Path, read, Stream, [encoding(utf8)]),
-        close(Stream),
-        
-        (   catch(consult(Path), Error,
-                (format('[ERROR] Syntax error in ~w: ~w~n', [DecodedFile, Error]),
+    ->  (   catch(consult(Path), Error,
+                (format('[ERROR] Syntax error in ~w: ~w~n', [File, Error]),
                  fail))
         ->  retractall(active_file(_)),
-            assertz(active_file(DecodedFile)),
-            (   loaded_file(DecodedFile) -> true ; assertz(loaded_file(DecodedFile))),
-            format('[OK] Consulted ~w~n', [DecodedFile])
-        ;   format('[WARNING] consult/1 failed for ~w~n', [DecodedFile]),
+            assertz(active_file(File)),
+            (   loaded_file(File) -> true ; assertz(loaded_file(File))),
+            format('[OK] Consulted ~w~n', [File])
+        ;   format('[WARNING] consult/1 failed for ~w~n', [File]),
             fail
         )
     ;   format('[ERROR] File does not exist: ~w~n', [Path]),
@@ -158,54 +133,30 @@ clear_all_facts :-
     writeln('All dynamic facts cleared').
 
 % ========================================
-% INFORMATION COMMANDS (променени за кирилица)
+% INFORMATION COMMANDS
 % ========================================
 
 list_files :-
     findall(F, loaded_file(F), Files),
     (   Files = []
-    ->  format('~s~n', ['Няма заредени файлове'])
-    ;   format('Заредени файлове (~w): ~w~n', [length(Files), Files])
+    ->  writeln('No files loaded')
+    ;   format('Loaded files (~w): ~w~n', [length(Files), Files])
     ).
 
 current_file :-
     (   active_file(F)
-    ->  format('Активен файл: ~w~n', [F])
-    ;   format('~s~n', ['Няма активен файл'])
+    ->  format('Active file: ~w~n', [F])
+    ;   writeln('No active file')
     ).
 
 % Показва всички предикати в активния файл
 list_predicates :-
     (   active_file(File)
-    ->  format('Динамични предикати в ~w:~n', [File]),
+    ->  format('Dynamic predicates in ~w:~n', [File]),
         current_predicate(Pred/Arity),
         predicate_property(Pred, dynamic),
         format('  ~w/~w~n', [Pred, Arity]),
         fail  % backtrack за всички предикати
-    ;   format('~s~n', ['Няма активен файл за показване на предикати'])
+    ;   writeln('No active file to list predicates from')
     ),
-    format('~s~n', ['(край на списъка)']).
-
-% ========================================
-% ДОПЪЛНИТЕЛНИ ПРЕДИКАТИ ЗА КИРИЛИЦА
-% ========================================
-
-% Предикат за показване на помощ с кирилица
-помощ :-
-    help.
-
-% Предикат за списък на файловете с кирилица
-списък_файлове :-
-    list_files.
-
-% Предикат за текущ файл с кирилица
-текущ_файл :-
-    current_file.
-
-% Предикат за зареждане на всички файлове с кирилица
-зареди_всички :-
-    load_all.
-
-% Предикат за изчистване на паметта с кирилица
-изчисти_памет :-
-    clear_all_facts.
+    writeln('(end of list)').
