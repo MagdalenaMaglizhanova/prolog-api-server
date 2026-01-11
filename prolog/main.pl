@@ -1,6 +1,3 @@
-% main.pl - С UTF-8 поддръжка
-:- encoding('UTF-8').
-
 :- dynamic loaded_file/1.
 :- dynamic active_file/1.
 :- dynamic runtime_dir/1.
@@ -81,6 +78,7 @@ consult_file(File) :-
 % FILE UNLOADING
 % ========================================
 
+% Изчиства всички фактове от определен файл
 unload_file(File) :-
     format('Unloading file: ~w~n', [File]),
     retractall(loaded_file(File)),
@@ -90,6 +88,7 @@ unload_file(File) :-
     ;   format('File ~w unloaded (was not active)~n', [File])
     ).
 
+% Изчиства ВСИЧКИ заредени файлове
 unload_all :-
     findall(F, loaded_file(F), Files),
     (   Files = []
@@ -99,11 +98,13 @@ unload_all :-
         format('All ~w files unloaded~n', [Count])
     ).
 
+% Презарежда файл (изчиства стари факти и зарежда нови)
 reconsult_file(File) :-
     format('Reconsulting file: ~w~n', [File]),
     unload_file(File),
     consult_file(File).
 
+% Превключване към нов файл (unload стар + load нов)
 switch_file(NewFile) :-
     (   active_file(CurrentFile)
     ->  format('Switching from ~w to ~w~n', [CurrentFile, NewFile]),
@@ -116,15 +117,17 @@ switch_file(NewFile) :-
 % KNOWLEDGE BASE MANAGEMENT
 % ========================================
 
+% Изчиства всички динамични предикати (общ подход)
 clear_all_facts :-
     writeln('Clearing all dynamic predicates from active file...'),
     (   active_file(File)
     ->  format('Active file: ~w~n', [File]),
+        % Това е генерален подход - ще изчисти ВСИЧКИ динамични предикати
         current_predicate(Pred/Arity),
         predicate_property(Pred, dynamic),
         format('  Retracting: ~w/~w~n', [Pred, Arity]),
         retractall(Pred),
-        fail
+        fail  % принуждава backtracking за всички предикати
     ;   true
     ),
     writeln('All dynamic facts cleared').
@@ -146,23 +149,14 @@ current_file :-
     ;   writeln('No active file')
     ).
 
+% Показва всички предикати в активния файл
 list_predicates :-
     (   active_file(File)
     ->  format('Dynamic predicates in ~w:~n', [File]),
         current_predicate(Pred/Arity),
         predicate_property(Pred, dynamic),
         format('  ~w/~w~n', [Pred, Arity]),
-        fail
+        fail  % backtrack за всички предикати
     ;   writeln('No active file to list predicates from')
     ),
     writeln('(end of list)').
-
-% ========================================
-% TEST FOR CYRILLIC
-% ========================================
-
-test_cyrillic :-
-    writeln('Testing Cyrillic support...'),
-    writeln('Български букви: АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЬЮЯ'),
-    writeln('Тест за кирилица: куче, котка, кон'),
-    writeln('✓ Cyrillic is working! ✓').
