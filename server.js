@@ -1,4 +1,4 @@
-// server.js - Върнете се към работещата версия с подобрения за кирилица
+// server.js - РАБОТЕЩА ВЕРСИЯ С UTF-8
 const express = require("express");
 const cors = require("cors");
 const { spawn } = require("child_process");
@@ -34,77 +34,23 @@ if (!fs.existsSync(RUNTIME_ROOT)) {
 }
 
 // ===============================
-// Start persistent Prolog process - FIXED VERSION
+// Start persistent Prolog process WITH UTF-8
 // ===============================
-let prolog;
-let isPrologAlive = false;
+console.log("[INIT] Starting Prolog process with UTF-8...");
 
-function startPrologProcess() {
-  console.log("[PROLOG] Starting Prolog process...");
-  
-  // КРИТИЧНО: Стартираме Prolog с UTF-8 опции
-  prolog = spawn("swipl", [
-    "-q",
-    "--encoding=utf-8",  // Добавяме кодировка
-    "-s",
-    path.join(__dirname, "prolog", "main.pl")
-  ], {
-    env: {
-      ...process.env,
-      LANG: 'en_US.UTF-8',
-      LC_ALL: 'en_US.UTF-8'
-    }
-  });
+// КРИТИЧНО: Добавете --encoding=utf-8 но НЕ променяйте нищо друго!
+const prolog = spawn("swipl", [
+  "-q",
+  "--encoding=utf-8",  // САМО ТОВА ДОБАВЕТЕ
+  "-s",
+  path.join(__dirname, "prolog", "main.pl")
+]);
 
-  // Настройка на кодировката
-  prolog.stdout.setEncoding("utf8");
-  prolog.stderr.setEncoding("utf8");
-  
-  console.log("🧠 Prolog engine started with UTF-8 encoding");
+console.log("🧠 Prolog engine started with UTF-8 encoding");
 
-  prolog.stdout.on("data", data => {
-    console.log("[PROLOG STDOUT]", data.substring(0, 200));
-  });
-
-  prolog.stderr.on("data", data => {
-    console.error("[PROLOG STDERR]", data.toString());
-  });
-
-  prolog.on("error", err => {
-    console.error("[PROLOG PROCESS ERROR]", err);
-    isPrologAlive = false;
-  });
-
-  prolog.on("exit", (code, signal) => {
-    console.log(`[PROLOG] Process exited with code ${code}, signal ${signal}`);
-    isPrologAlive = false;
-    
-    // Опит за рестарт след 2 секунди
-    setTimeout(() => {
-      console.log("[PROLOG] Attempting to restart...");
-      startPrologProcess();
-    }, 2000);
-  });
-
-  prolog.on("close", (code) => {
-    console.log(`[PROLOG] Process closed with code ${code}`);
-    isPrologAlive = false;
-  });
-
-  isPrologAlive = true;
-  
-  // Проверка дали процесът работи
-  setTimeout(() => {
-    if (prolog && !prolog.killed) {
-      console.log("[PROLOG] Process is alive and running");
-    } else {
-      console.error("[PROLOG] Process failed to start");
-    }
-  }, 1000);
-}
-
-// Стартираме Prolog процеса
-startPrologProcess();
+prolog.stderr.on("data", data => {
+  console.error("[PROLOG ERROR]", data.toString());
+});
 
 // Буфер за stdout
 let stdoutBuffer = "";
@@ -114,72 +60,40 @@ prolog.stdout.on("data", data => {
 });
 
 // ===============================
-// Helper: send command to Prolog - IMPROVED
+// Helper: send command to Prolog
 // ===============================
 function sendToProlog(command, timeout = 5000) {
   return new Promise((resolve, reject) => {
-    if (!prolog || prolog.killed || !isPrologAlive) {
-      console.error("[PROLOG] Process is dead, cannot send command");
-      reject(new Error("Prolog process is not running"));
-      return;
-    }
-
     const cleanCommand = command.trim();
     console.log(`[PROLOG] Sending command: "${cleanCommand}"`);
     
     stdoutBuffer = "";
-    
-    // Проверка дали stdin е достъпен
-    if (!prolog.stdin.writable) {
-      console.error("[PROLOG] stdin is not writable");
-      reject(new Error("Prolog stdin is not writable"));
-      return;
-    }
+    prolog.stdin.write(cleanCommand + ".\n");
 
-    try {
-      // Изпращаме командата с нова линия
-      const success = prolog.stdin.write(cleanCommand + ".\n");
-      
-      if (!success) {
-        console.error("[PROLOG] Write returned false");
-        reject(new Error("Failed to write to Prolog stdin"));
-        return;
+    const start = Date.now();
+    const interval = setInterval(() => {
+      if (stdoutBuffer.length > 0) {
+        clearInterval(interval);
+        console.log(`[PROLOG] Response length: ${stdoutBuffer.length} chars`);
+        resolve(stdoutBuffer.trim());
       }
-      
-      console.log(`[PROLOG] Command written successfully: "${cleanCommand}"`);
-
-      const start = Date.now();
-      const interval = setInterval(() => {
-        // Проверяваме дали имаме отговор
-        if (stdoutBuffer.length > 0 && !stdoutBuffer.endsWith('\n')) {
-          clearInterval(interval);
-          console.log(`[PROLOG] Got response of ${stdoutBuffer.length} chars`);
-          resolve(stdoutBuffer.trim());
-        }
-        
-        // Проверка за timeout
-        if (Date.now() - start > timeout) {
-          clearInterval(interval);
-          console.error(`[PROLOG] Timeout after ${timeout}ms, buffer: "${stdoutBuffer}"`);
-          reject(new Error(`Prolog timeout after ${timeout}ms`));
-        }
-      }, 100);
-      
-    } catch (err) {
-      console.error("[PROLOG] Exception during write:", err);
-      reject(new Error(`Failed to write command: ${err.message}`));
-    }
+      if (Date.now() - start > timeout) {
+        clearInterval(interval);
+        console.error(`[PROLOG] Timeout after ${timeout}ms`);
+        reject(new Error(`Prolog timeout after ${timeout}ms`));
+      }
+    }, 100);
   });
 }
 
 // ===============================
-// Helper: load domain from Supabase
+// Helper: load domain from Supabase WITH UTF-8
 // ===============================
 async function loadDomain(domain) {
   console.log(`[DOMAIN] Loading domain: "${domain}"`);
   
-  // Валидация на името на домейна
-  if (!domain.match(/^[a-zA-Z0-9_-]+$/)) {
+  // Разрешаваме кирилица в имена на домейни
+  if (!domain.match(/^[a-zA-Zа-яА-Я0-9_-]+$/)) {
     throw new Error("Invalid domain name");
   }
 
@@ -192,7 +106,6 @@ async function loadDomain(domain) {
   } else {
     console.log(`[DOMAIN] Directory already exists: ${domainDir}`);
     
-    // Изчистване на стари файлове
     const oldFiles = fs.readdirSync(domainDir);
     if (oldFiles.length > 0) {
       console.log(`[DOMAIN] Removing old files: ${oldFiles.join(", ")}`);
@@ -206,7 +119,6 @@ async function loadDomain(domain) {
     }
   }
 
-  // Извличане на списък с файлове от Supabase
   console.log(`[SUPABASE] Listing files in bucket "prolog-files", folder "${domain}"`);
   const { data: files, error } = await supabase
     .storage
@@ -224,7 +136,6 @@ async function loadDomain(domain) {
     throw new Error(`No files found for domain "${domain}" in Supabase`);
   }
 
-  // Сваляне на всички .pl файлове
   let downloadedCount = 0;
   const plFiles = files.filter(f => f.name.endsWith('.pl'));
   
@@ -252,7 +163,7 @@ async function loadDomain(domain) {
       }
 
       const buffer = Buffer.from(await data.arrayBuffer());
-      // КРИТИЧНО: Записване с UTF-8 кодировка
+      // КРИТИЧНО: Записваме с UTF-8 кодировка
       fs.writeFileSync(localPath, buffer, 'utf8');
       downloadedCount++;
       
@@ -276,7 +187,7 @@ async function loadDomain(domain) {
 }
 
 // ===============================
-// API: select domain
+// API endpoints (остават същите)
 // ===============================
 app.post("/prolog/select-domain", async (req, res) => {
   const { domain } = req.body;
@@ -288,33 +199,16 @@ app.post("/prolog/select-domain", async (req, res) => {
   }
 
   try {
-    // Проверка дали Prolog процесът работи
-    if (!isPrologAlive || !prolog || prolog.killed) {
-      console.error("[API] Prolog process is not running, restarting...");
-      startPrologProcess();
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-
-    // 1. Зареждане на домейна от Supabase
-    console.log(`[API] Step 1: Loading domain from Supabase...`);
     const dir = await loadDomain(domain);
-
-    // 2. Конвертиране на пътя
     const prologPath = dir.replace(/\\/g, '/');
-    console.log(`[API] Step 2: Setting Prolog runtime dir to: "${prologPath}"`);
-
-    // 3. Настройка на директорията в Prolog
-    console.log(`[API] Step 3: Configuring Prolog...`);
+    
+    console.log(`[API] Setting Prolog runtime dir to: "${prologPath}"`);
     const setDirResult = await sendToProlog(`set_runtime_dir('${prologPath}')`);
     console.log(`[API] Prolog set_runtime_dir response: ${setDirResult}`);
 
-    // 4. Зареждане на всички файлове
-    console.log(`[API] Step 4: Loading all Prolog files...`);
     const loadResult = await sendToProlog('load_all');
     console.log(`[API] Prolog load_all result: ${loadResult}`);
 
-    // 5. Взимане на помощния текст
-    console.log(`[API] Step 5: Getting help...`);
     const helpText = await sendToProlog("help");
 
     console.log(`[API] Domain "${domain}" successfully loaded`);
@@ -338,9 +232,6 @@ app.post("/prolog/select-domain", async (req, res) => {
   }
 });
 
-// ===============================
-// API: send Prolog command
-// ===============================
 app.post("/prolog/command", async (req, res) => {
   const { command } = req.body;
   console.log(`[API] POST /prolog/command: "${command}"`);
@@ -350,10 +241,6 @@ app.post("/prolog/command", async (req, res) => {
   }
 
   try {
-    if (!isPrologAlive || !prolog || prolog.killed) {
-      throw new Error("Prolog process is not running");
-    }
-    
     const output = await sendToProlog(command);
     
     res.json({ 
@@ -370,9 +257,6 @@ app.post("/prolog/command", async (req, res) => {
   }
 });
 
-// ===============================
-// API: Check if domain is loaded
-// ===============================
 app.get("/prolog/status", async (req, res) => {
   try {
     console.log(`[API] GET /prolog/status - Checking Prolog status`);
@@ -384,29 +268,18 @@ app.get("/prolog/status", async (req, res) => {
       runtimeContents = fs.readdirSync(RUNTIME_ROOT);
     }
     
-    // Проверка на текущия файл в Prolog
     let prologStatus = "Prolog not responding";
-    let prologAlive = false;
-    
-    if (isPrologAlive && prolog && !prolog.killed) {
-      try {
-        prologStatus = await sendToProlog("current_file");
-        prologAlive = true;
-      } catch (err) {
-        prologStatus = `Prolog error: ${err.message}`;
-        prologAlive = false;
-      }
+    try {
+      prologStatus = await sendToProlog("current_file");
+    } catch (err) {
+      prologStatus = `Prolog error: ${err.message}`;
     }
     
     res.json({
       success: true,
       server: {
         status: "running",
-        port: port,
-        prologProcess: prologAlive ? "alive" : "dead",
-        isPrologAlive: isPrologAlive,
-        prologProcessExists: !!prolog,
-        prologKilled: prolog ? prolog.killed : true
+        port: port
       },
       runtime: {
         exists: runtimeExists,
@@ -422,84 +295,22 @@ app.get("/prolog/status", async (req, res) => {
   }
 });
 
-// ===============================
-// API: Restart Prolog process
-// ===============================
-app.post("/prolog/restart", (req, res) => {
-  console.log("[API] POST /prolog/restart - Restarting Prolog process");
-  
-  try {
-    if (prolog && !prolog.killed) {
-      prolog.kill('SIGTERM');
-      console.log("[API] Sent SIGTERM to existing Prolog process");
-    }
-    
-    startPrologProcess();
-    
-    res.json({
-      success: true,
-      message: "Prolog process restart initiated"
-    });
-    
-  } catch (err) {
-    console.error("[API] Error restarting Prolog:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ===============================
-// Health check
-// ===============================
 app.get("/", (req, res) => {
   res.json({
     service: "Prolog API Server",
     status: "running",
     version: "1.0.0",
-    prologAlive: isPrologAlive,
+    encoding: "UTF-8",
     endpoints: [
       "POST /prolog/select-domain",
       "POST /prolog/command", 
-      "GET /prolog/status",
-      "POST /prolog/restart"
+      "GET /prolog/status"
     ]
   });
 });
 
-// ===============================
-// Error handling middleware
-// ===============================
-app.use((err, req, res, next) => {
-  console.error(`[ERROR] Unhandled error:`, err);
-  res.status(500).json({ 
-    error: "Internal server error",
-    message: err.message 
-  });
-});
-
-// ===============================
-// Handle process termination
-// ===============================
-process.on('SIGTERM', () => {
-  console.log('[SERVER] Received SIGTERM, shutting down...');
-  if (prolog && !prolog.killed) {
-    prolog.kill();
-  }
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('[SERVER] Received SIGINT, shutting down...');
-  if (prolog && !prolog.killed) {
-    prolog.kill();
-  }
-  process.exit(0);
-});
-
-// ===============================
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
   console.log(`📁 Runtime directory: ${RUNTIME_ROOT}`);
-  console.log(`🌐 Health check: http://localhost:${port}/`);
-  console.log(`📊 Status endpoint: http://localhost:${port}/prolog/status`);
-  console.log(`🔄 Restart endpoint: http://localhost:${port}/prolog/restart`);
+  console.log(`🔤 Encoding: UTF-8`);
 });
