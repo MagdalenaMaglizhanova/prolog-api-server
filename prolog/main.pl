@@ -76,15 +76,12 @@ consult_file(File) :-
     ).
 
 % ========================================
-% FILE UNLOADING
+% FILE UNLOADING (ПОПРАВЕНИ ВЕРСИИ)
 % ========================================
 
-% Изчиства всички фактове от определен файл
+% Изчиства всички фактове от определен файл - ПРОСТА ВЕРСИЯ
 unload_file(File) :-
     format('Unloading file: ~w~n', [File]),
-    runtime_dir(Dir),
-    atomic_list_concat([Dir, '/', File], Path),
-    
     % Първо премахваме файла от списъка със заредени
     retractall(loaded_file(File)),
     
@@ -96,42 +93,52 @@ unload_file(File) :-
     ),
     
     % Изчистваме кеша на зареждането
-    (   source_file(Path)
-    ->  abolish_all_tables,
-        unload_file(Path)
-    ;   true
-    ).
+    abolish_all_tables,
+    format('Cleared all tables~n').
 
 % Изчиства ВСИЧКИ заредени файлове
 unload_all :-
     findall(F, loaded_file(F), Files),
     (   Files = []
     ->  writeln('No files to unload')
-    ;   forall(member(F, Files), unload_file(F)),
+    ;   forall(member(F, Files), 
+            (retractall(loaded_file(F)),
+             format('Unloaded: ~w~n', [F]))
+        ),
+        retractall(active_file(_)),
         abolish_all_tables,
         length(Files, Count),
         format('All ~w files unloaded~n', [Count])
     ).
 
-% Презарежда файл (изчиства стари факти и зарежда нови)
+% Презарежда файл (изчиства стари факти и зарежда нови) - ФИКСИРАНА ВЕРСИЯ
 reconsult_file(File) :-
     format('Reconsulting file: ~w~n', [File]),
     runtime_dir(Dir),
     atomic_list_concat([Dir, '/', File], Path),
     
-    % Изчистване на стария файл
-    (   source_file(Path)
-    ->  unload_file(Path),
-        format('Unloaded previous version of ~w~n', [File])
-    ;   true
-    ),
-    
-    % Изчистване от нашия списък
-    retractall(loaded_file(File)),
-    (   active_file(File) -> retractall(active_file(File)) ; true),
-    
-    % Зареждане на новия файл
-    consult_file(File).
+    % Проверка дали файлът съществува
+    (   exists_file(Path)
+    ->  % Изчистване от нашия списък
+        (   loaded_file(File) -> retractall(loaded_file(File)) ; true),
+        (   active_file(File) -> retractall(active_file(File)) ; true),
+        
+        % Изчистване на кеша
+        abolish_all_tables,
+        
+        % Зареждане на новия файл
+        (   catch(consult(Path), Error,
+                (format('[ERROR] Failed to reconsult ~w: ~w~n', [File, Error]),
+                 fail))
+        ->  assertz(loaded_file(File)),
+            assertz(active_file(File)),
+            format('[OK] Reconsulted ~w~n', [File])
+        ;   format('[WARNING] Failed to reconsult ~w~n', [File]),
+            fail
+        )
+    ;   format('[ERROR] File does not exist: ~w~n', [Path]),
+        fail
+    ).
 
 % Превключване към нов файл (unload стар + load нов)
 switch_file(NewFile) :-
@@ -160,7 +167,8 @@ clear_all_facts :-
                  retractall(Pred))
               ),
             format('Cleared ~w dynamic predicates~n', [length(Predicates)])
-        )
+        ),
+        abolish_all_tables
     ;   writeln('No active file selected')
     ).
 
