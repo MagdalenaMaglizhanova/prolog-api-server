@@ -56,42 +56,6 @@ prolog.stdout.on("data", data => {
 });
 
 // ===============================
-// Helper functions for encoding
-// ===============================
-
-// Декодиране на Unicode escape последователности
-function decodeUnicode(str) {
-  if (!str) return str;
-  return str.replace(/\\u([\d\w]{4})/gi, (match, grp) => 
-    String.fromCharCode(parseInt(grp, 16))
-  );
-}
-
-// Кодиране на пътища за Prolog
-function encodeForProlog(filePath) {
-  const normalized = filePath.replace(/\\/g, '/');
-  // Кодираме само специални символи, но не кодираме кирилица
-  return encodeURI(normalized)
-    .replace(/%[A-F0-9]{2}/gi, match => {
-      // Ако е кирилица (Cyrillic range), декодираме обратно
-      const code = parseInt(match.substring(1), 16);
-      if ((code >= 0x0400 && code <= 0x04FF) || (code >= 0x0500 && code <= 0x052F)) {
-        return decodeURIComponent(match);
-      }
-      return match;
-    });
-}
-
-// Нормализиране на имена на файлове
-function normalizeFileName(fileName) {
-  try {
-    return decodeURIComponent(fileName);
-  } catch (e) {
-    return fileName;
-  }
-}
-
-// ===============================
 // Helper: send command to Prolog
 // ===============================
 function sendToProlog(command, timeout = 5000) {
@@ -100,19 +64,14 @@ function sendToProlog(command, timeout = 5000) {
     console.log(`[PROLOG] Sending command: "${cleanCommand}"`);
     
     stdoutBuffer = "";
-    // Изпращане с UTF-8 encoding
-    prolog.stdin.write(cleanCommand + ".\n", 'utf8');
+    prolog.stdin.write(cleanCommand + ".\n");
 
     const start = Date.now();
     const interval = setInterval(() => {
       if (stdoutBuffer.length > 0) {
         clearInterval(interval);
-        console.log(`[PROLOG] Response received (${stdoutBuffer.length} chars)`);
-        
-        // Декодиране на Unicode escape последователности
-        const decodedResponse = decodeUnicode(stdoutBuffer.trim());
-        
-        resolve(decodedResponse);
+        console.log(`[PROLOG] Response: ${stdoutBuffer.substring(0, 200)}...`);
+        resolve(stdoutBuffer.trim());
       }
       if (Date.now() - start > timeout) {
         clearInterval(interval);
@@ -129,8 +88,8 @@ function sendToProlog(command, timeout = 5000) {
 async function loadDomain(domain) {
   console.log(`[DOMAIN] Loading domain: "${domain}"`);
   
-  // Валидация на името на домейна - позволена кирилица
-  if (!domain.match(/^[\w\u0400-\u04FF\s_-]+$/u)) {
+  // Валидация на името на домейна
+  if (!domain.match(/^[a-zA-Z0-9_-]+$/)) {
     throw new Error("Invalid domain name");
   }
 
@@ -186,9 +145,7 @@ async function loadDomain(domain) {
   for (const file of plFiles) {
     console.log(`[DOWNLOAD] Processing: ${domain}/${file.name}`);
     
-    // Нормализиране на името на файла
-    const decodedFileName = normalizeFileName(file.name);
-    const localPath = path.join(domainDir, decodedFileName);
+    const localPath = path.join(domainDir, file.name);
     
     try {
       // Сваляне на файла от Supabase
@@ -207,12 +164,12 @@ async function loadDomain(domain) {
         continue;
       }
 
-      // Записване на файла с UTF-8 encoding
+      // Записване на файла
       const buffer = Buffer.from(await data.arrayBuffer());
-      fs.writeFileSync(localPath, buffer, { encoding: 'utf8' });
+      fs.writeFileSync(localPath, buffer);
       downloadedCount++;
       
-      console.log(`[DOWNLOAD] ✓ Saved: ${decodedFileName} (${buffer.length} bytes)`);
+      console.log(`[DOWNLOAD] ✓ Saved: ${file.name} (${buffer.length} bytes)`);
       
     } catch (err) {
       console.error(`[DOWNLOAD] Failed to process ${file.name}:`, err.message);
@@ -226,7 +183,7 @@ async function loadDomain(domain) {
   console.log(`[DOMAIN] Successfully downloaded ${downloadedCount} files to ${domainDir}`);
   
   // Проверка на сваляните файлове
-  const downloadedFiles = fs.readdirSync(domainDir, { encoding: 'utf8' });
+  const downloadedFiles = fs.readdirSync(domainDir);
   console.log(`[DOMAIN] Files in directory: ${downloadedFiles.join(", ")}`);
   
   return domainDir;
@@ -249,8 +206,8 @@ app.post("/prolog/select-domain", async (req, res) => {
     console.log(`[API] Step 1: Loading domain from Supabase...`);
     const dir = await loadDomain(domain);
 
-    // 2. Конвертиране на пътя за Prolog
-    const prologPath = encodeForProlog(dir);
+    // 2. Конвертиране на пътя за Prolog (Unix стил)
+    const prologPath = dir.replace(/\\/g, '/');
     console.log(`[API] Step 2: Setting Prolog runtime dir to: "${prologPath}"`);
 
     // 3. Настройка на директорията в Prolog
@@ -341,7 +298,7 @@ app.get("/prolog/status", async (req, res) => {
     let runtimeContents = [];
     
     if (runtimeExists) {
-      runtimeContents = fs.readdirSync(RUNTIME_ROOT, { encoding: 'utf8' });
+      runtimeContents = fs.readdirSync(RUNTIME_ROOT);
     }
     
     // Проверка на текущия файл в Prolog
@@ -417,13 +374,6 @@ process.on('SIGINT', () => {
     prolog.kill();
   }
   process.exit(0);
-});
-
-// ===============================
-// Handle Prolog process exit
-// ===============================
-prolog.on('exit', (code) => {
-  console.log(`[PROLOG] Process exited with code ${code}`);
 });
 
 // ===============================
