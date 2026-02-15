@@ -35,7 +35,7 @@ if (!fs.existsSync(RUNTIME_ROOT)) {
 // ===============================
 // User sessions - отделен Prolog процес за всеки потребител
 // ===============================
-const userSessions = new Map(); // userId -> { prolog, buffer, domain, lastUsed, ready, commandQueue }
+const userSessions = new Map(); // userId -> { prolog, buffers, domain, lastUsed }
 
 // Функция за създаване на Prolog процес за потребител
 function createPrologProcess(userId) {
@@ -54,32 +54,22 @@ function createPrologProcess(userId) {
     }
   });
 
-  let stdoutBuffer = "";
-  let isReady = false;
-  let initializationComplete = false;
+  // Създаваме буфер за всеки процес
+  const buffers = {
+    stdout: "",
+    stderr: ""
+  };
 
   prolog.stdout.on("data", data => {
     const chunk = data.toString('utf8');
-    stdoutBuffer += chunk;
-    
-    // Проверяваме дали процесът е готов
-    if (!isReady && (chunk.includes("Prolog multi-user system initialized") || chunk.includes("Session initialized"))) {
-      isReady = true;
-      initializationComplete = true;
-      console.log(`[PROLOG][${userId}] Process is ready`);
-      
-      // Изпращаме init_session веднага щом процесът е готов
-      prolog.stdin.write(`init_session('${userId}').\n`);
-    }
-    
-    // Проверка за завършване на команда
-    if (chunk.includes('true.') || chunk.includes('false.') || chunk.includes('ERROR') || chunk.includes('Warning')) {
-      // Тук можем да обработваме завършването на команди
-    }
+    buffers.stdout += chunk;
+    console.log(`[PROLOG STDOUT][${userId}] ${chunk.trim()}`);
   });
 
   prolog.stderr.on("data", data => {
-    console.error(`[PROLOG ERROR][${userId}]`, data.toString());
+    const chunk = data.toString('utf8');
+    buffers.stderr += chunk;
+    console.error(`[PROLOG STDERR][${userId}] ${chunk.trim()}`);
   });
 
   prolog.on("error", (err) => {
@@ -91,38 +81,22 @@ function createPrologProcess(userId) {
     userSessions.delete(userId);
   });
 
+  // Изпращаме init_session след малко забавяне
+  setTimeout(() => {
+    prolog.stdin.write(`init_session('${userId}').\n`);
+  }, 1000);
+
   return {
     prolog,
-    buffer: stdoutBuffer,
+    buffers,
     domain: null,
     lastUsed: Date.now(),
-    ready: false,
-    initializationComplete: false,
-    commandQueue: []
+    commandCallbacks: new Map() // За проследяване на команди
   };
 }
 
-// Функция за изчакване процесът да е готов
-async function waitForPrologReady(userId, session, timeoutMs = 15000) {
-  const start = Date.now();
-  
-  while (!session.ready && !session.initializationComplete) {
-    if (Date.now() - start > timeoutMs) {
-      // Ако изтече времето, но процесът работи, продължаваме
-      if (session.prolog && !session.prolog.killed) {
-        console.log(`[PROLOG][${userId}] Proceed despite not ready - process is alive`);
-        session.ready = true;
-        return true;
-      }
-      throw new Error(`Prolog process not ready after ${timeoutMs}ms`);
-    }
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
-  return true;
-}
-
 // Функция за изпращане на команда до потребителски Prolog процес
-async function sendToProlog(userId, command, timeout = 30000) { // Увеличен таймаут на 30 секунди
+async function sendToProlog(userId, command, timeout = 30000) {
   let session = userSessions.get(userId);
   
   if (!session) {
@@ -130,15 +104,8 @@ async function sendToProlog(userId, command, timeout = 30000) { // Увелич�
     session = createPrologProcess(userId);
     userSessions.set(userId, session);
     
-    // Изчакваме малко за инициализация
+    // Изчакваме процесът да се инициализира
     await new Promise(resolve => setTimeout(resolve, 2000));
-  }
-
-  // Изчакваме процесът да е готов (ако не е)
-  try {
-    await waitForPrologReady(userId, session, 10000);
-  } catch (err) {
-    console.warn(`[PROLOG][${userId}] Process not fully ready, attempting command anyway:`, err.message);
   }
 
   // Обновяваме времето на последна употреба
@@ -148,57 +115,71 @@ async function sendToProlog(userId, command, timeout = 30000) { // Увелич�
     const cleanCommand = command.trim();
     console.log(`[PROLOG][${userId}] Sending command: "${cleanCommand}"`);
     
-    // Изчистваме буфера
-    session.buffer = "";
+    // Генерираме уникален ID за тази команда
+    const commandId = Date.now() + Math.random().toString(36);
+    
+    // Запазваме текущата дължина на буфера
+    const startStdoutLength = session.buffers.stdout.length;
+    const startStderrLength = session.buffers.stderr.length;
+    
+    // Изчистваме стари callbacks
+    if (session.commandCallbacks.size > 10) {
+      session.commandCallbacks.clear();
+    }
     
     // Изпращаме командата
     session.prolog.stdin.write(cleanCommand + ".\n");
 
     const start = Date.now();
-    let lastBufferLength = 0;
-    let stableCount = 0;
     
     const interval = setInterval(() => {
+      const now = Date.now();
+      const newStdout = session.buffers.stdout.substring(startStdoutLength);
+      const newStderr = session.buffers.stderr.substring(startStderrLength);
+      
       // Ако имаме нов изход
-      if (session.buffer.length > 0) {
-        // Проверяваме дали изходът е стабилен (не се променя)
-        if (session.buffer.length === lastBufferLength) {
-          stableCount++;
-        } else {
-          stableCount = 0;
-          lastBufferLength = session.buffer.length;
-        }
+      if (newStdout.length > 0 || newStderr.length > 0) {
+        // Проверяваме дали командата е завършила
+        const fullOutput = newStdout + newStderr;
         
-        // Ако изходът е стабилен за 3 последователни проверки или съдържа индикатор за край
-        if (stableCount >= 3 || 
-            session.buffer.includes('true.') || 
-            session.buffer.includes('false.') || 
-            session.buffer.includes('ERROR') ||
-            session.buffer.includes('done') ||
-            session.buffer.includes('loaded')) {
+        // Признаци за завършване на команда
+        if (fullOutput.includes('true.') || 
+            fullOutput.includes('false.') || 
+            fullOutput.includes('ERROR') ||
+            fullOutput.includes('Warning') ||
+            fullOutput.includes('✓') ||
+            fullOutput.includes('done') ||
+            fullOutput.includes('loaded') ||
+            fullOutput.includes('?-') ||
+            now - start > 1000 && fullOutput.trim().endsWith('.')) {
           
           clearInterval(interval);
-          console.log(`[PROLOG][${userId}] Response received (${session.buffer.length} bytes)`);
+          console.log(`[PROLOG][${userId}] Command completed in ${now - start}ms`);
           
-          const cleanedOutput = session.buffer.trim();
-          resolve(cleanedOutput);
+          // Връщаме целия изход
+          const result = (newStdout + newStderr).trim();
+          resolve(result || "OK");
+          return;
         }
       }
       
       // Проверка за таймаут
-      if (Date.now() - start > timeout) {
+      if (now - start > timeout) {
         clearInterval(interval);
-        console.error(`[PROLOG][${userId}] Timeout after ${timeout}ms, buffer: ${session.buffer.substring(0, 200)}`);
         
-        // Ако има частичен отговор, връщаме него
-        if (session.buffer.length > 0) {
-          console.log(`[PROLOG][${userId}] Returning partial response due to timeout`);
-          resolve(session.buffer.trim());
+        // Ако имаме частичен отговор, връщаме него
+        const partialOutput = (session.buffers.stdout.substring(startStdoutLength) + 
+                              session.buffers.stderr.substring(startStderrLength)).trim();
+        
+        if (partialOutput.length > 0) {
+          console.log(`[PROLOG][${userId}] Returning partial response after timeout: ${partialOutput.substring(0, 100)}...`);
+          resolve(partialOutput);
         } else {
+          console.error(`[PROLOG][${userId}] Timeout after ${timeout}ms with no output`);
           reject(new Error(`Prolog timeout after ${timeout}ms`));
         }
       }
-    }, 500); // Проверка на всеки 500ms
+    }, 200); // Проверка на всеки 200ms
   });
 }
 
@@ -246,8 +227,6 @@ async function loadDomain(domain) {
   if (!fs.existsSync(domainDir)) {
     fs.mkdirSync(domainDir, { recursive: true });
     console.log(`[DOMAIN] Created directory: ${domainDir}`);
-  } else {
-    console.log(`[DOMAIN] Directory already exists: ${domainDir}`);
   }
 
   // Извличане на списък с файлове от Supabase
@@ -284,18 +263,6 @@ async function loadDomain(domain) {
     const localPath = path.join(domainDir, file.name);
     
     try {
-      // Проверка дали файлът вече съществува и е актуален
-      if (fs.existsSync(localPath)) {
-        const stats = fs.statSync(localPath);
-        const fileAge = Date.now() - stats.mtimeMs;
-        // Ако файлът е от последните 5 минути, прескачаме
-        if (fileAge < 5 * 60 * 1000) {
-          console.log(`[DOWNLOAD] File ${file.name} is recent, skipping download`);
-          downloadedCount++;
-          continue;
-        }
-      }
-
       // Сваляне на файла от Supabase
       const { data, error: downloadError } = await supabase
         .storage
@@ -468,29 +435,34 @@ app.post("/prolog/select-domain", async (req, res) => {
     const prologPath = dir.replace(/\\/g, '/');
     console.log(`[API][${userId}] Step 2: Setting Prolog runtime dir to: "${prologPath}"`);
 
-    // 3. Изчистване на старите файлове за този потребител (с по-голям таймаут)
+    // 3. Създаване на сесия ако няма
+    let session = userSessions.get(userId);
+    if (!session) {
+      session = createPrologProcess(userId);
+      userSessions.set(userId, session);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    // 4. Изчистване на старите файлове
     console.log(`[API][${userId}] Step 3: Clearing old files...`);
     try {
       await sendToProlog(userId, 'unload_all', 10000);
     } catch (err) {
-      console.log(`[API][${userId}] Unload_all timed out, continuing anyway...`);
+      console.log(`[API][${userId}] Unload_all issue, continuing...`);
     }
 
-    // 4. Настройка на директорията в Prolog
+    // 5. Настройка на директорията
     console.log(`[API][${userId}] Step 4: Configuring Prolog...`);
     const setDirResult = await sendToProlog(userId, `set_runtime_dir('${prologPath}')`, 10000);
     console.log(`[API][${userId}] Prolog set_runtime_dir response: ${setDirResult}`);
 
-    // 5. Зареждане на всички файлове в Prolog
+    // 6. Зареждане на всички файлове
     console.log(`[API][${userId}] Step 5: Loading all Prolog files...`);
     const loadResult = await sendToProlog(userId, 'load_all', 30000);
     console.log(`[API][${userId}] Prolog load_all result: ${loadResult}`);
 
     // Обновяваме домейна в сесията
-    const session = userSessions.get(userId);
-    if (session) {
-      session.domain = domain;
-    }
+    session.domain = domain;
 
     console.log(`[API][${userId}] Domain "${domain}" successfully loaded`);
     
@@ -528,6 +500,14 @@ app.post("/prolog/command", async (req, res) => {
   }
 
   try {
+    // Проверка дали има сесия
+    if (!userSessions.has(userId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "No active session. Please select a domain first." 
+      });
+    }
+
     console.log(`[API][${userId}] Sending command to Prolog...`);
     const output = await sendToProlog(userId, command, 30000);
     const processedOutput = processPrologOutput(output);
@@ -563,30 +543,11 @@ app.get("/prolog/user-status/:userId", async (req, res) => {
       });
     }
 
-    // Проверка на текущия файл
-    let currentFile = "unknown";
-    try {
-      currentFile = await sendToProlog(userId, "current_file", 5000);
-    } catch (err) {
-      currentFile = "error getting current file";
-    }
-
-    // Списък на заредените файлове
-    let loadedFiles = [];
-    try {
-      const filesOutput = await sendToProlog(userId, "list_files", 5000);
-      loadedFiles = filesOutput.split('\n').filter(line => line.includes('.pl'));
-    } catch (err) {
-      loadedFiles = [];
-    }
-
     res.json({
       active: true,
       userId,
       domain: session.domain,
-      lastUsed: new Date(session.lastUsed).toISOString(),
-      currentFile: processPrologOutput(currentFile),
-      loadedFiles
+      lastUsed: new Date(session.lastUsed).toISOString()
     });
 
   } catch (err) {
@@ -706,5 +667,5 @@ app.listen(port, () => {
   console.log(`🌐 Health check: http://localhost:${port}/`);
   console.log(`📊 Status endpoint: http://localhost:${port}/prolog/status`);
   console.log(`🔄 UTF-8 encoding enabled`);
-  console.log(`👥 Multi-user support enabled with ${userSessions.size} active sessions`);
+  console.log(`👥 Multi-user support enabled`);
 });
