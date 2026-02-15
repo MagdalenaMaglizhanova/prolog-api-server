@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const cors = require("cors");
 const { spawn } = require("child_process");
@@ -34,63 +33,121 @@ if (!fs.existsSync(RUNTIME_ROOT)) {
 }
 
 // ===============================
-// Start persistent Prolog process with UTF-8 encoding
+// User sessions - отделен Prolog процес за всеки потребител
 // ===============================
-const prolog = spawn("swipl", [
-  "-q",
-  "-s",
-  path.join(__dirname, "prolog", "main.pl")
-], {
-  encoding: 'utf8',
-  env: { 
-    ...process.env,
-    LANG: 'en_US.UTF-8',
-    LC_ALL: 'en_US.UTF-8'
+const userSessions = new Map(); // userId -> { prolog, buffer, domain, lastUsed }
+
+// Функция за създаване на Prolog процес за потребител
+function createPrologProcess(userId) {
+  console.log(`[PROLOG][${userId}] Creating new Prolog process`);
+  
+  const prolog = spawn("swipl", [
+    "-q",
+    "-s",
+    path.join(__dirname, "prolog", "main.pl")
+  ], {
+    encoding: 'utf8',
+    env: { 
+      ...process.env,
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'en_US.UTF-8'
+    }
+  });
+
+  let stdoutBuffer = "";
+
+  prolog.stdout.on("data", data => {
+    stdoutBuffer += data.toString('utf8');
+  });
+
+  prolog.stderr.on("data", data => {
+    console.error(`[PROLOG ERROR][${userId}]`, data.toString());
+  });
+
+  prolog.on("error", (err) => {
+    console.error(`[PROLOG][${userId}] Process error:`, err);
+  });
+
+  prolog.on("exit", (code) => {
+    console.log(`[PROLOG][${userId}] Process exited with code ${code}`);
+    userSessions.delete(userId);
+  });
+
+  // Изчакваме малко за инициализация
+  setTimeout(() => {
+    // Инициализиране на сесията
+    prolog.stdin.write(`init_session('${userId}').\n`);
+    console.log(`[PROLOG][${userId}] Session initialized`);
+  }, 500);
+
+  return {
+    prolog,
+    buffer: stdoutBuffer,
+    domain: null,
+    lastUsed: Date.now()
+  };
+}
+
+// Функция за изпращане на команда до потребителски Prolog процес
+async function sendToProlog(userId, command, timeout = 5000) {
+  let session = userSessions.get(userId);
+  
+  if (!session) {
+    console.log(`[PROLOG][${userId}] No session found, creating new one`);
+    session = createPrologProcess(userId);
+    userSessions.set(userId, session);
+    // Изчакваме инициализацията
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
-});
 
-console.log("🧠 Prolog engine started (UTF-8 enabled)");
-
-prolog.stderr.on("data", data => {
-  console.error("[PROLOG ERROR]", data.toString());
-});
-
-// Буфер за stdout
-let stdoutBuffer = "";
-
-prolog.stdout.on("data", data => {
-  stdoutBuffer += data.toString('utf8');
-});
-
-// ===============================
-// Helper: send command to Prolog
-// ===============================
-function sendToProlog(command, timeout = 5000) {
+  // Обновяваме времето на последна употреба
+  session.lastUsed = Date.now();
+  
   return new Promise((resolve, reject) => {
     const cleanCommand = command.trim();
-    console.log(`[PROLOG] Sending command: "${cleanCommand}"`);
+    console.log(`[PROLOG][${userId}] Sending command: "${cleanCommand}"`);
     
-    stdoutBuffer = "";
-    prolog.stdin.write(cleanCommand + ".\n");
+    // Изчистваме буфера
+    session.buffer = "";
+    
+    // Изпращаме командата
+    session.prolog.stdin.write(cleanCommand + ".\n");
 
     const start = Date.now();
     const interval = setInterval(() => {
-      if (stdoutBuffer.length > 0) {
+      if (session.buffer.length > 0) {
         clearInterval(interval);
-        console.log(`[PROLOG] Response: ${stdoutBuffer.substring(0, 200)}...`);
+        console.log(`[PROLOG][${userId}] Response received (${session.buffer.length} bytes)`);
         
-        // UTF-8 обработка на отговора
-        const cleanedOutput = stdoutBuffer.trim();
+        const cleanedOutput = session.buffer.trim();
         resolve(cleanedOutput);
       }
       if (Date.now() - start > timeout) {
         clearInterval(interval);
-        console.error(`[PROLOG] Timeout after ${timeout}ms`);
+        console.error(`[PROLOG][${userId}] Timeout after ${timeout}ms`);
         reject(new Error(`Prolog timeout after ${timeout}ms`));
       }
     }, 100);
   });
 }
+
+// Функция за изчистване на стари сесии
+function cleanupOldSessions(maxAgeMs = 30 * 60 * 1000) { // 30 минути
+  const now = Date.now();
+  for (const [userId, session] of userSessions.entries()) {
+    if (now - session.lastUsed > maxAgeMs) {
+      console.log(`[CLEANUP] Removing inactive session for user ${userId}`);
+      if (session.prolog && !session.prolog.killed) {
+        session.prolog.stdin.write(`end_session.\n`);
+        session.prolog.kill();
+      }
+      userSessions.delete(userId);
+    }
+  }
+}
+
+// Изчистваме стари сесии на всеки 10 минути
+setInterval(cleanupOldSessions, 10 * 60 * 1000);
 
 // ===============================
 // Helper: load domain from Supabase
@@ -110,21 +167,6 @@ async function loadDomain(domain) {
   if (!fs.existsSync(domainDir)) {
     fs.mkdirSync(domainDir, { recursive: true });
     console.log(`[DOMAIN] Created directory: ${domainDir}`);
-  } else {
-    console.log(`[DOMAIN] Directory already exists: ${domainDir}`);
-    
-    // Изчистване на стари файлове преди ново сваляне
-    const oldFiles = fs.readdirSync(domainDir);
-    if (oldFiles.length > 0) {
-      console.log(`[DOMAIN] Removing old files: ${oldFiles.join(", ")}`);
-      for (const file of oldFiles) {
-        try {
-          fs.unlinkSync(path.join(domainDir, file));
-        } catch (err) {
-          console.warn(`[DOMAIN] Could not remove ${file}: ${err.message}`);
-        }
-      }
-    }
   }
 
   // Извличане на списък с файлове от Supabase
@@ -139,11 +181,14 @@ async function loadDomain(domain) {
     throw new Error(`Supabase error: ${error.message}`);
   }
 
-  console.log(`[SUPABASE] Found ${files ? files.length : 0} files:`, 
-    files ? files.map(f => f.name).join(", ") : "none");
-
+  console.log(`[SUPABASE] Found ${files ? files.length : 0} files`);
+  
   if (!files || files.length === 0) {
-    throw new Error(`No files found for domain "${domain}" in Supabase`);
+    // Ако няма файлове, създаваме празен .pl файл
+    const emptyFile = path.join(domainDir, `${domain}.pl`);
+    fs.writeFileSync(emptyFile, `% ${domain} domain\n% Add your Prolog facts here\n`);
+    console.log(`[DOMAIN] Created empty file: ${emptyFile}`);
+    return domainDir;
   }
 
   // Сваляне на всички .pl файлове
@@ -158,6 +203,18 @@ async function loadDomain(domain) {
     const localPath = path.join(domainDir, file.name);
     
     try {
+      // Проверка дали файлът вече съществува и е актуален
+      if (fs.existsSync(localPath)) {
+        const stats = fs.statSync(localPath);
+        const fileAge = Date.now() - stats.mtimeMs;
+        // Ако файлът е от последните 5 минути, прескачаме
+        if (fileAge < 5 * 60 * 1000) {
+          console.log(`[DOWNLOAD] File ${file.name} is recent, skipping download`);
+          downloadedCount++;
+          continue;
+        }
+      }
+
       // Сваляне на файла от Supabase
       const { data, error: downloadError } = await supabase
         .storage
@@ -186,15 +243,13 @@ async function loadDomain(domain) {
     }
   }
 
-  if (downloadedCount === 0) {
-    throw new Error(`No Prolog files could be downloaded for domain "${domain}"`);
+  if (downloadedCount === 0 && plFiles.length > 0) {
+    console.log(`[DOMAIN] No new files downloaded, using existing files`);
   }
 
-  console.log(`[DOMAIN] Successfully downloaded ${downloadedCount} files to ${domainDir}`);
-  
-  // Проверка на сваляните файлове
-  const downloadedFiles = fs.readdirSync(domainDir);
-  console.log(`[DOMAIN] Files in directory: ${downloadedFiles.join(", ")}`);
+  // Проверка на файловете в директорията
+  const dirFiles = fs.readdirSync(domainDir);
+  console.log(`[DOMAIN] Files in directory: ${dirFiles.join(", ")}`);
   
   return domainDir;
 }
@@ -203,13 +258,17 @@ async function loadDomain(domain) {
 // Helper: UTF-8 обработка на Prolog отговор
 // ===============================
 function processPrologOutput(output) {
+  if (!output) return output;
+  
   try {
     // Преобразуване на Unicode escape последователности
-    const processed = output.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
+    let processed = output.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
       return String.fromCharCode(parseInt(hex, 16));
     });
     
-    // Допълнителни обработки, ако са необходими
+    // Премахване на излишни символи
+    processed = processed.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    
     return processed;
   } catch (err) {
     console.warn(`[UTF8] Error processing output: ${err.message}`);
@@ -218,66 +277,146 @@ function processPrologOutput(output) {
 }
 
 // ===============================
+// API: Initialize session
+// ===============================
+app.post("/prolog/init-session", async (req, res) => {
+  const { userId } = req.body;
+  
+  if (!userId) {
+    return res.status(400).json({ error: "No userId provided" });
+  }
+
+  try {
+    let session = userSessions.get(userId);
+    
+    if (!session) {
+      session = createPrologProcess(userId);
+      userSessions.set(userId, session);
+      // Изчакваме инициализацията
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    session.lastUsed = Date.now();
+    
+    res.json({ 
+      success: true, 
+      message: "Session initialized",
+      userId 
+    });
+  } catch (err) {
+    console.error(`[API] Error initializing session:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// API: End session
+// ===============================
+app.post("/prolog/end-session", async (req, res) => {
+  const { userId } = req.body;
+  
+  if (!userId) {
+    return res.status(400).json({ error: "No userId provided" });
+  }
+
+  try {
+    const session = userSessions.get(userId);
+    
+    if (session && session.prolog && !session.prolog.killed) {
+      await sendToProlog(userId, "end_session");
+      session.prolog.kill();
+    }
+    
+    userSessions.delete(userId);
+    
+    res.json({ 
+      success: true, 
+      message: "Session ended" 
+    });
+  } catch (err) {
+    console.error(`[API] Error ending session:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// API: List active sessions
+// ===============================
+app.get("/prolog/list-sessions", (req, res) => {
+  const sessions = Array.from(userSessions.entries()).map(([userId, session]) => ({
+    userId,
+    domain: session.domain,
+    lastUsed: new Date(session.lastUsed).toISOString(),
+    active: session.prolog && !session.prolog.killed
+  }));
+  
+  res.json({
+    success: true,
+    sessions,
+    count: sessions.length
+  });
+});
+
+// ===============================
 // API: select domain (animals, etc.)
 // ===============================
 app.post("/prolog/select-domain", async (req, res) => {
-  const { domain } = req.body;
-  console.log(`[API] POST /prolog/select-domain for domain: "${domain}"`);
+  const { domain, userId } = req.body;
+  console.log(`[API][${userId}] POST /prolog/select-domain for domain: "${domain}"`);
   
   if (!domain) {
-    console.error("[API] No domain provided in request");
     return res.status(400).json({ error: "No domain provided" });
+  }
+
+  if (!userId) {
+    return res.status(400).json({ error: "No userId provided" });
   }
 
   try {
     // 1. Зареждане на домейна от Supabase
-    console.log(`[API] Step 1: Loading domain from Supabase...`);
+    console.log(`[API][${userId}] Step 1: Loading domain from Supabase...`);
     const dir = await loadDomain(domain);
 
     // 2. Конвертиране на пътя за Prolog (Unix стил)
     const prologPath = dir.replace(/\\/g, '/');
-    console.log(`[API] Step 2: Setting Prolog runtime dir to: "${prologPath}"`);
+    console.log(`[API][${userId}] Step 2: Setting Prolog runtime dir to: "${prologPath}"`);
 
-    // 3. Настройка на директорията в Prolog
-    console.log(`[API] Step 3: Configuring Prolog...`);
-    const setDirResult = await sendToProlog(`set_runtime_dir('${prologPath}')`);
-    console.log(`[API] Prolog set_runtime_dir response: ${setDirResult}`);
+    // 3. Изчистване на старите файлове за този потребител
+    console.log(`[API][${userId}] Step 3: Clearing old files...`);
+    await sendToProlog(userId, 'unload_all').catch(() => {});
 
-    // 4. Зареждане на всички файлове в Prolog
-    console.log(`[API] Step 4: Loading all Prolog files...`);
-    const loadResult = await sendToProlog('load_all');
-    console.log(`[API] Prolog load_all result: ${loadResult}`);
+    // 4. Настройка на директорията в Prolog
+    console.log(`[API][${userId}] Step 4: Configuring Prolog...`);
+    const setDirResult = await sendToProlog(userId, `set_runtime_dir('${prologPath}')`);
+    console.log(`[API][${userId}] Prolog set_runtime_dir response: ${setDirResult}`);
 
-    // 5. Взимане на помощния текст
-    console.log(`[API] Step 5: Getting help...`);
-    const helpText = await sendToProlog("help");
-    const processedHelp = processPrologOutput(helpText);
+    // 5. Зареждане на всички файлове в Prolog
+    console.log(`[API][${userId}] Step 5: Loading all Prolog files...`);
+    const loadResult = await sendToProlog(userId, 'load_all');
+    console.log(`[API][${userId}] Prolog load_all result: ${loadResult}`);
 
-    console.log(`[API] Domain "${domain}" successfully loaded`);
+    // Обновяваме домейна в сесията
+    const session = userSessions.get(userId);
+    if (session) {
+      session.domain = domain;
+    }
+
+    console.log(`[API][${userId}] Domain "${domain}" successfully loaded`);
     
     res.json({
       success: true,
       message: `Domain '${domain}' loaded successfully`,
-      files: loadResult,
-      help: processedHelp,
+      files: processPrologOutput(loadResult),
       directory: prologPath
     });
 
   } catch (err) {
-    console.error(`[API] Error loading domain "${domain}":`, err);
-    
-    // Детайлна грешка
-    const errorMessage = err.message || "Unknown error";
-    const errorStack = err.stack || "No stack trace";
-    
-    console.error(`[API] Error details: ${errorMessage}`);
-    console.error(`[API] Stack trace: ${errorStack}`);
+    console.error(`[API][${userId}] Error loading domain "${domain}":`, err);
     
     res.status(500).json({ 
       success: false,
       error: `Failed to load domain "${domain}"`,
-      details: errorMessage,
-      stack: process.env.NODE_ENV === 'development' ? errorStack : undefined
+      details: err.message
     });
   }
 });
@@ -286,30 +425,82 @@ app.post("/prolog/select-domain", async (req, res) => {
 // API: send Prolog command
 // ===============================
 app.post("/prolog/command", async (req, res) => {
-  const { command } = req.body;
-  console.log(`[API] POST /prolog/command: "${command}"`);
+  const { command, userId } = req.body;
+  console.log(`[API][${userId}] POST /prolog/command: "${command}"`);
 
   if (!command) {
     return res.status(400).json({ error: "No command provided" });
   }
 
+  if (!userId) {
+    return res.status(400).json({ error: "No userId provided" });
+  }
+
   try {
-    console.log(`[API] Sending command to Prolog...`);
-    const output = await sendToProlog(command);
+    console.log(`[API][${userId}] Sending command to Prolog...`);
+    const output = await sendToProlog(userId, command);
     const processedOutput = processPrologOutput(output);
-    console.log(`[API] Command executed successfully`);
+    console.log(`[API][${userId}] Command executed successfully`);
     
     res.json({ 
       success: true,
       output: processedOutput
     });
   } catch (err) {
-    console.error(`[API] Error executing command:`, err);
+    console.error(`[API][${userId}] Error executing command:`, err);
     
     res.status(500).json({ 
       success: false,
       error: err.message || "Failed to execute Prolog command"
     });
+  }
+});
+
+// ===============================
+// API: Get user session info
+// ===============================
+app.get("/prolog/user-status/:userId", async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    const session = userSessions.get(userId);
+    
+    if (!session) {
+      return res.json({
+        active: false,
+        message: "No active session"
+      });
+    }
+
+    // Проверка на текущия файл
+    let currentFile = "unknown";
+    try {
+      currentFile = await sendToProlog(userId, "current_file");
+    } catch (err) {
+      currentFile = "error getting current file";
+    }
+
+    // Списък на заредените файлове
+    let loadedFiles = [];
+    try {
+      const filesOutput = await sendToProlog(userId, "list_files");
+      loadedFiles = filesOutput.split('\n').filter(line => line.includes('.pl'));
+    } catch (err) {
+      loadedFiles = [];
+    }
+
+    res.json({
+      active: true,
+      userId,
+      domain: session.domain,
+      lastUsed: new Date(session.lastUsed).toISOString(),
+      currentFile: processPrologOutput(currentFile),
+      loadedFiles
+    });
+
+  } catch (err) {
+    console.error(`[API] Error getting user status:`, err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -320,9 +511,6 @@ app.get("/prolog/status", async (req, res) => {
   try {
     console.log(`[API] GET /prolog/status - Checking Prolog status`);
     
-    // Проверка дали Prolog процесът работи
-    const isPrologAlive = prolog && !prolog.killed;
-    
     // Проверка на runtime директорията
     const runtimeExists = fs.existsSync(RUNTIME_ROOT);
     let runtimeContents = [];
@@ -331,28 +519,19 @@ app.get("/prolog/status", async (req, res) => {
       runtimeContents = fs.readdirSync(RUNTIME_ROOT);
     }
     
-    // Проверка на текущия файл в Prolog
-    let prologStatus = "Prolog not responding";
-    try {
-      prologStatus = await sendToProlog("current_file");
-    } catch (err) {
-      prologStatus = `Prolog error: ${err.message}`;
-    }
-    
     res.json({
       success: true,
       server: {
         status: "running",
         port: port,
-        prologProcess: isPrologAlive ? "alive" : "dead",
+        activeSessions: userSessions.size,
         encoding: "utf8"
       },
       runtime: {
         exists: runtimeExists,
         path: RUNTIME_ROOT,
         contents: runtimeContents
-      },
-      prolog: processPrologOutput(prologStatus)
+      }
     });
     
   } catch (err) {
@@ -370,9 +549,14 @@ app.get("/", (req, res) => {
     status: "running",
     version: "1.0.0",
     encoding: "UTF-8",
+    activeSessions: userSessions.size,
     endpoints: [
+      "POST /prolog/init-session",
+      "POST /prolog/end-session", 
+      "GET /prolog/list-sessions",
       "POST /prolog/select-domain",
-      "POST /prolog/command", 
+      "POST /prolog/command",
+      "GET /prolog/user-status/:userId",
       "GET /prolog/status"
     ]
   });
@@ -394,17 +578,29 @@ app.use((err, req, res, next) => {
 // ===============================
 process.on('SIGTERM', () => {
   console.log('[SERVER] Received SIGTERM, shutting down...');
-  if (prolog && !prolog.killed) {
-    prolog.kill();
+  
+  // Убиваме всички Prolog процеси
+  for (const [userId, session] of userSessions.entries()) {
+    if (session.prolog && !session.prolog.killed) {
+      session.prolog.stdin.write(`end_session.\n`);
+      session.prolog.kill();
+    }
   }
+  
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('[SERVER] Received SIGINT, shutting down...');
-  if (prolog && !prolog.killed) {
-    prolog.kill();
+  
+  // Убиваме всички Prolog процеси
+  for (const [userId, session] of userSessions.entries()) {
+    if (session.prolog && !session.prolog.killed) {
+      session.prolog.stdin.write(`end_session.\n`);
+      session.prolog.kill();
+    }
   }
+  
   process.exit(0);
 });
 
@@ -415,4 +611,5 @@ app.listen(port, () => {
   console.log(`🌐 Health check: http://localhost:${port}/`);
   console.log(`📊 Status endpoint: http://localhost:${port}/prolog/status`);
   console.log(`🔄 UTF-8 encoding enabled`);
+  console.log(`👥 Multi-user support enabled`);
 });
