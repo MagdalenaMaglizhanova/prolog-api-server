@@ -4,6 +4,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { createClient } = require("@supabase/supabase-js");
+const ws = require("ws");
 
 const app = express();
 const port = process.env.PORT || 10001;
@@ -16,7 +17,12 @@ app.use(express.json({ limit: '50mb' }));
 // ===============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SECRET_KEY
+  process.env.SUPABASE_SECRET_KEY,
+  {
+    realtime: {
+      transport: ws
+    }
+  }
 );
 
 console.log("[INIT] Supabase client initialized");
