@@ -1,4 +1,3 @@
-```json
 {
   "name": "prolog-supabase-server",
   "version": "1.0.0",
@@ -13,4 +12,3 @@
     "ws": "^8.18.3"
   }
 }
-```
