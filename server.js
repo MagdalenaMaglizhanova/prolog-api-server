@@ -16,7 +16,7 @@ app.use(express.json({ limit: '50mb' }));
 // ===============================
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SECRET_KEY
 );
 
 console.log("[INIT] Supabase client initialized");
